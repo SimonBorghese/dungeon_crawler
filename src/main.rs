@@ -5,6 +5,7 @@ clippy::too_many_arguments,
 clippy::unnecessary_wraps
 )]
 
+
 use sdl2;
 use sdl2::event::Event;
 use anyhow::{anyhow, Result};
@@ -13,18 +14,21 @@ use vulkanalia::Version;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::window as vk_window;
 use vulkanalia::prelude::v1_0::*;
-use vulkanalia::vk::InstanceCreateInfo;
+use vulkanalia::vk::{CommandBufferLevel, CommandBufferUsageFlags, ImageAspectFlags, InstanceCreateInfo};
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::os::raw::c_void;
+use sdl2::libc::creat;
 use thiserror::Error;
+use vulkanalia::bytecode::Bytecode;
 
 use vulkanalia::vk::ExtDebugUtilsExtension;
 use vulkanalia::vk::KhrSurfaceExtension;
 use vulkanalia::vk::KhrSwapchainExtension;
 
 const VALIDATION_ENABLED: bool =
-    cfg!(debug_assertions);
+    true;
+//    cfg!(debug_assertions);
 
 const VALIDATION_LAYER: vk::ExtensionName =
     vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
@@ -85,11 +89,15 @@ impl App {
         let loader = LibloadingLoader::new(LIBRARY)
             .expect("Couldn't load vulkan library");
         let entry = Entry::new(loader).map_err(|b| anyhow!("{}", b))?;
-        let instance = create_instance(window, &entry)?;
         let mut data = AppData::default();
+        let instance = create_instance(window, &entry, &mut data)?;
         data.surface = vk_window::create_surface(&instance, &window, &window)?;
         pick_physical_device(&instance, &mut data)?;
         let device = create_logical_device(&entry, &instance, &mut data)?;
+
+        create_swapchain(&window, &instance, &device, &mut data)?;
+        create_swapchain_image_views(&device, &mut data)?;
+
         Ok(Self {entry, instance, data, device})
     }
 
@@ -100,11 +108,54 @@ impl App {
 
     /// Destroys our Vulkan app.
     unsafe fn destroy(&mut self) {
+        self.data.swapchain_image_views
+            .iter()
+            .for_each(|v| self.device.destroy_image_view(*v, None));
         self.device.destroy_swapchain_khr(self.data.swapchain, None);
         self.device.destroy_device(None);
         self.instance.destroy_surface_khr(self.data.surface, None);
+        if VALIDATION_ENABLED{
+            self.instance.destroy_debug_utils_messenger_ext(self.data.messenger, None);
+        }
         self.instance.destroy_instance(None);
     }
+}
+
+unsafe fn create_pipeline(device: &Device, data: &mut AppData) -> Result<()>{
+    let vert = include_bytes!("shaders/vert.spv");
+    let frag = include_bytes!("shaders/frag.spv");
+
+    let vert_shader_module = create_shader_module(device, &vert[..])?;
+    let frag_shader_module = create_shader_module(device, &frag[..])?;
+
+    let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::VERTEX)
+        .module(vert_shader_module)
+        .name(b"main\0");
+
+    let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::FRAGMENT)
+        .module(frag_shader_module)
+        .name(b"main\0");
+
+
+    device.destroy_shader_module(vert_shader_module, None);
+    device.destroy_shader_module(frag_shader_module, None);
+
+    Ok(())
+}
+
+unsafe fn create_shader_module(
+    device: &Device,
+    bytecode: &[u8],
+) -> Result<vk::ShaderModule>{
+    let bytecode = Bytecode::new(bytecode)?;
+
+    let info = vk::ShaderModuleCreateInfo::builder()
+        .code_size(bytecode.code_size())
+        .code(bytecode.code());
+
+    Ok(device.create_shader_module(&info, None)?)
 }
 
 unsafe fn create_logical_device(
@@ -162,7 +213,9 @@ unsafe fn create_logical_device(
 #[error("Missing {0}.")]
 pub struct SuitabilityError(pub &'static str);
 
-unsafe fn create_instance(window: &sdl2::video::Window, entry: &Entry) -> Result<Instance>{
+unsafe fn create_instance(window: &sdl2::video::Window,
+                          entry: &Entry,
+                          data: &mut AppData) -> Result<Instance>{
     let application_info = vk::ApplicationInfo::builder()
         .application_name(b"Vulkan Rust\0")
         .application_version(vk::make_version(1,0,0))
@@ -170,10 +223,14 @@ unsafe fn create_instance(window: &sdl2::video::Window, entry: &Entry) -> Result
         .engine_version(vk::make_version(1,0,0))
         .api_version(vk::make_version(1,0,0));
 
-    let extensions = vk_window::get_required_instance_extensions(window)
+    let mut extensions = vk_window::get_required_instance_extensions(window)
         .iter()
         .map(|e| e.as_ptr())
         .collect::<Vec<_>>();
+
+    if VALIDATION_ENABLED{
+        extensions.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_ptr());
+    }
 
     let available_layers = entry
         .enumerate_instance_layer_properties()?
@@ -197,7 +254,41 @@ unsafe fn create_instance(window: &sdl2::video::Window, entry: &Entry) -> Result
         .enabled_layer_names(&layers);
     info.enabled_layer_count = 1;
 
-    Ok(entry.create_instance(&info, None)?)
+    let instance = entry.create_instance(&info, None)?;
+
+    if VALIDATION_ENABLED {
+        let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+            .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::all())
+            .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
+            .user_callback(Some(debug_callback)).build();
+
+        data.messenger = instance.create_debug_utils_messenger_ext(&debug_info, None)?;
+    }
+
+    Ok(instance)
+}
+
+extern "system" fn debug_callback(
+    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    type_: vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    _: *mut c_void
+) -> vk::Bool32{
+    let data = unsafe { *data };
+
+    let message = unsafe{ CStr::from_ptr(data.message) }.to_string_lossy();
+
+    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+        error!("({:?}) {}", type_, message);
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
+        warn!("({:?}) {}", type_, message);
+    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
+        info!("({:?}) {}", type_, message);
+    } else {
+        trace!("({:?}) {}", type_, message);
+    }
+
+    vk::FALSE
 }
 
 unsafe fn create_swapchain(
@@ -235,7 +326,7 @@ unsafe fn create_swapchain(
         .min_image_count(image_count)
         .image_format(surface_format.format)
         .image_color_space(surface_format.color_space)
-         .image_extent(extent)
+        .image_extent(extent)
         .image_array_layers(1)
         .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .image_sharing_mode(image_sharing_mode)
@@ -247,6 +338,12 @@ unsafe fn create_swapchain(
         .old_swapchain(vk::SwapchainKHR::null()).build();
 
     data.swapchain = device.create_swapchain_khr(&info, None)?;
+
+    data.swapchain_images = device.get_swapchain_images_khr(data.swapchain)?;
+
+    data.swapchain_format = surface_format.format;
+
+    data.swapchain_extent = extent;
 
     Ok(())
 }
@@ -308,11 +405,50 @@ unsafe fn check_physical_device_extensions(
 /// The Vulkan handles and associated properties used by our Vulkan app.
 #[derive(Clone, Debug, Default)]
 struct AppData {
+    messenger: vk::DebugUtilsMessengerEXT,
     surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
+    swapchain_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
     swapchain: vk::SwapchainKHR,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_image_views: Vec<vk::ImageView>,
+}
+
+unsafe fn create_swapchain_image_views(
+    device: &Device,
+    data: &mut AppData
+) -> Result<()>{
+    data.swapchain_image_views = data
+        .swapchain_images
+        .iter()
+        .map(|i| {
+            let components = vk::ComponentMapping::builder()
+                .r(vk::ComponentSwizzle::IDENTITY)
+                .g(vk::ComponentSwizzle::IDENTITY)
+                .b(vk::ComponentSwizzle::IDENTITY)
+                .a(vk::ComponentSwizzle::IDENTITY).build();
+
+            let subresource_range = vk::ImageSubresourceRange::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1).build();
+
+            let info = vk::ImageViewCreateInfo::builder()
+                .image(*i)
+                .view_type(vk::ImageViewType::_2D)
+                .format(data.swapchain_format)
+                .components(components)
+                .subresource_range(subresource_range);
+
+            device.create_image_view(&info, None)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(())
 }
 
 #[derive(Copy, Clone, Debug)]
