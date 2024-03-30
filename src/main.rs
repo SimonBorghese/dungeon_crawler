@@ -1,3 +1,15 @@
+mod engine;
+
+fn main(){
+    let mut engine = engine::vk_engine::VulkanEngine::new(800,600);
+    engine.init();
+    engine.run();
+    unsafe {
+        engine.cleanup();
+    }
+}
+
+/*
 #![allow(
 dead_code,
 unused_variables,
@@ -15,7 +27,7 @@ use vulkanalia::Version;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
 use vulkanalia::window as vk_window;
 use vulkanalia::prelude::v1_0::*;
-use vulkanalia::vk::{CommandBufferLevel, CommandBufferUsageFlags, ImageAspectFlags, InstanceCreateInfo};
+use vulkanalia::vk::{CommandBufferLevel, CommandBufferUsageFlags, ImageAspectFlags, InstanceCreateInfo, PFN_vkCreateSemaphore};
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::mem::swap;
@@ -27,6 +39,7 @@ use vulkanalia::bytecode::Bytecode;
 use vulkanalia::vk::ExtDebugUtilsExtension;
 use vulkanalia::vk::KhrSurfaceExtension;
 use vulkanalia::vk::KhrSwapchainExtension;
+use ash;
 
 const VALIDATION_ENABLED: bool =
     true;
@@ -38,6 +51,23 @@ const VALIDATION_LAYER: vk::ExtensionName =
 const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
 
 fn main() -> Result<()> {
+
+    let test= dungeon_crawler::vkb_Device::from();
+
+    unsafe {
+
+        let builder = dungeon_crawler::vkb_InstanceBuilder::new()
+            .set_app_name("Example VK".as_ptr().cast())
+            .request_validation_layers(true)
+            .use_default_debug_messenger()
+            .build();
+        let inst = builder._phantom_0;
+
+        
+        let mut device2 = ash::vk::Device::from(test.device.read() as _);
+
+        device2.clone().
+    }
     pretty_env_logger::init();
     let sdl = sdl2::init()
         .expect("Unable to initialize SDL 2");
@@ -201,7 +231,6 @@ unsafe fn create_sync_objects(device: &Device, data: &mut AppData) -> Result<()>
 
     data.image_available_semaphore = device.create_semaphore(&semaphore_info, None)?;
     data.render_finished_semaphore = device.create_semaphore(&semaphore_info, None)?;
-
 
     Ok(())
 }
@@ -853,3 +882,5 @@ fn get_swapchain_extent(
             .build()
     }
 }
+
+ */
