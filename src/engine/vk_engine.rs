@@ -2,9 +2,22 @@ use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
 use ash::vk;
-use ash::vk::Handle;
+use ash::vk::{CommandPoolCreateFlags, Handle};
+use ash_bootstrap::QueueFamilyCriteria;
+use super::vk_initializers::*;
+use super::vk_image;
 
 const USE_VALIDATION_LAYERS: bool = true;
+
+#[derive(Default, Copy, Clone)]
+pub struct FrameData {
+    command_pool: ash::vk::CommandPool,
+    command_buffer: ash::vk::CommandBuffer,
+    render_semaphore: ash::vk::Semaphore,
+    render_fence: ash::vk::Fence,
+}
+
+const FRAME_OVERLAP: usize = 2;
 
 pub struct VulkanEngine{
     pub sdl: sdl2::Sdl,
@@ -26,13 +39,28 @@ pub struct VulkanEngine{
     pub debug_utils: Option<ash::extensions::ext::DebugUtils>,
     
     pub swapchain: Option<ash_bootstrap::swapchain::Swapchain>,
+    pub swapchain_dev: Option<ash::extensions::khr::Swapchain>,
     pub swapchain_image_format: ash::vk::Format,
     pub swapchain_images: Vec<ash::vk::Image>,
     pub swapchain_image_views: Vec<ash::vk::ImageView>,
     pub swapchain_extent: ash::vk::Extent2D,
+    
+    pub frames: [FrameData; FRAME_OVERLAP],
+    pub graphics_queue: ash::vk::Queue,
+    pub graphics_queue_family: u32
 }
 
 impl VulkanEngine{
+    pub fn get_current_frame(&self) -> &FrameData{
+        &self.frames[self.frame_number as usize % FRAME_OVERLAP]
+    }
+
+    #[inline]
+    fn get_device(&self) -> &ash::Device{
+        self.device.as_ref()
+            .expect("Unable to get device!")
+    }
+    
     pub fn new(width: u32, height: u32) -> Self {
         let sdl = sdl2::init()
             .expect("Unable to initialize SDL2");
@@ -69,10 +97,14 @@ impl VulkanEngine{
             surface: std::default::Default::default(),
             surface_dev: None,
             swapchain: None,
+            swapchain_dev: None,
             swapchain_image_format: std::default::Default::default(),
             swapchain_images: vec![],
             swapchain_image_views: vec![],
             swapchain_extent: std::default::Default::default(),
+            frames: [FrameData::default(); 2],
+            graphics_queue: Default::default(),
+            graphics_queue_family: 0,
         }
     }
 
@@ -126,7 +158,103 @@ impl VulkanEngine{
     }
 
     unsafe fn draw(&mut self){
+        self.get_device().wait_for_fences(&[self.get_current_frame().render_fence],
+                                          true, 1000000000)
+            .expect("Unable to wait for fence");
 
+        self.get_device().reset_fences(&[self.get_current_frame().render_fence])
+            .expect("Unable to reset fence!");
+
+        let swapchain_image = self.swapchain.as_mut().unwrap()
+            .acquire(self.device.as_mut().unwrap(), self.surface_dev.as_ref().unwrap(),
+                     1000000000, false)
+            .expect("Unable to acquire swapchain image");
+
+        let cmd = self.get_current_frame().command_buffer;
+
+        self.get_device().reset_command_buffer(cmd, Default::default())
+            .expect("Unable to reset command buffer!");
+
+        let cmd_begin_info = command_buffer_begin_info(
+            vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+        );
+
+        self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
+            .expect("Unable to begin command buffer!");
+
+        vk_image::transition_image(self.get_device(),
+        cmd, self.swapchain_images[swapchain_image.frame_index],
+        vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
+
+        let mut clear_value;
+
+        let flash = glm::abs(glm::cos(self.frame_number as f32 / 120.0));
+        clear_value = vk::ClearColorValue::default();
+        clear_value.float32[2] = flash;
+        clear_value.float32[3] = 1.0;
+
+        let clear_range = image_subresource_range(
+            vk::ImageAspectFlags::COLOR
+        );
+
+        self.get_device().cmd_clear_color_image(cmd,
+        self.swapchain_images[swapchain_image.frame_index],
+        vk::ImageLayout::GENERAL, &clear_value, &[clear_range.build()]);
+
+        vk_image::transition_image(self.get_device(),
+        cmd, self.swapchain_images[swapchain_image.frame_index],
+        vk::ImageLayout::GENERAL, vk::ImageLayout::PRESENT_SRC_KHR);
+
+        self.get_device().end_command_buffer(cmd)
+            .expect("Unable to end command buffer!");
+
+
+
+        let cmd_info = command_buffer_submit_info(cmd)
+            .build();
+
+        let wait_info = semaphore_submit_info(
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            swapchain_image.ready
+        ).build();
+
+        let signal_info = semaphore_submit_info(
+            vk::PipelineStageFlags2::ALL_GRAPHICS,
+            self.get_current_frame().render_semaphore
+        ).build();
+
+        let submit = submit_info(&[cmd_info],
+                                 &[signal_info],
+                                 &[wait_info])
+            .build();
+
+        self.get_device().queue_submit2(self.graphics_queue, &[submit],
+        self.get_current_frame().render_fence)
+            .expect("Unable to submit queue");
+
+        /*
+        let swapchain = [self.swapchain.as_ref().unwrap().handle()];
+        let render_semaphore = [self.get_current_frame().render_semaphore];
+        let image_index = [swapchain_image.image_index as u32];
+        let present_info = vk::PresentInfoKHR::builder()
+            .swapchains(&swapchain)
+            .wait_semaphores(&render_semaphore)
+            .image_indices(&image_index);
+
+        self.swapchain_dev.as_ref().unwrap().queue_present(self.graphics_queue, &present_info)
+            .expect("Unable t opresent");
+
+         */
+
+        let semaphore = self.get_current_frame().render_semaphore;
+        self.swapchain.as_mut().unwrap().queue_present(self.graphics_queue,
+                                                       semaphore, swapchain_image.image_index)
+            .expect("Unable to present image!");
+
+        self.get_device().reset_fences(&[swapchain_image.complete])
+            .expect("Unable to reset fence!");
+        self.frame_number += 1;
+        println!("Frame Number: {}", self.frame_number);
     }
 
 
@@ -156,7 +284,10 @@ impl VulkanEngine{
         let builder = ash_bootstrap::InstanceBuilder::new()
             .app_name("Vulkan Application").unwrap()
             .validation_layers({
-                    ash_bootstrap::ValidationLayers::Require
+                match USE_VALIDATION_LAYERS {
+                    true => ash_bootstrap::ValidationLayers::Require,
+                    false => ash_bootstrap::ValidationLayers::Disable
+                }
             })
             .request_debug_messenger(
                 ash_bootstrap::DebugMessenger::Custom {callback, user_data_pointer: 0 as _}
@@ -198,9 +329,11 @@ impl VulkanEngine{
 
         let selector = ash_bootstrap::DeviceBuilder::new()
             .require_version(1,3)
-            .require_features(&features)
+            .set_required_features_12(vulkan_12_features)
+            .set_required_features_13(vulkan_13_features)
             .for_surface(self.surface)
             .require_extension(ash::extensions::khr::Swapchain::name().as_ptr())
+            .queue_family(QueueFamilyCriteria::graphics_present())
             .build(self.instance.as_ref().unwrap(),
             self.surface_dev.as_ref().unwrap(), &builder.2)
             .expect("Unable to build device!");
@@ -210,7 +343,25 @@ impl VulkanEngine{
 
         println!("Successfully made device: {}", selector.1.device_name());
 
+
+        self.graphics_queue_family = Self::get_graphics_queue_family(&selector.1)
+            .expect("Unable to get graphics queue family!") as u32;
+
+        self.graphics_queue = self.get_device()
+            .get_device_queue(self.graphics_queue_family, 0);
+
         Ok(())
+    }
+
+    unsafe fn get_graphics_queue_family(device: &ash_bootstrap::DeviceMetadata) -> Result<usize, &str>{
+        for queue_family in device.queue_family_properties()
+            .iter()
+            .enumerate(){
+            if queue_family.1.queue_flags.as_raw() & vk::QueueFlags::GRAPHICS.as_raw() > 0{
+                return Ok(queue_family.0);
+            }
+        }
+        return Err("No Graphics Queue Family Found")
     }
 
 
@@ -225,23 +376,31 @@ impl VulkanEngine{
             .height(height)
             .build();
 
-        let mut swapchain_builder = ash_bootstrap::SwapchainOptions::new();
-        swapchain_builder.format_preference(&[ash::vk::SurfaceFormatKHR::builder()
+        let swapchain_builder = ash_bootstrap::SwapchainOptions::new()
+            .format_preference(&[ash::vk::SurfaceFormatKHR::builder()
                                    .format(self.swapchain_image_format)
                                    .color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
-                                    .build()]);
-        swapchain_builder.present_mode_preference(&[ash::vk::PresentModeKHR::FIFO]);
-        swapchain_builder.usage(ash::vk::ImageUsageFlags::TRANSFER_DST);
-        let swapchain_builder2 =
+                                    .build()])
+            .frames_in_flight(3)
+            .present_mode_preference(&[ash::vk::PresentModeKHR::FIFO])
+            .usage(ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
+             | ash::vk::ImageUsageFlags::TRANSFER_DST);
+
+        let mut swapchain_builder2 =
             ash_bootstrap::Swapchain::new(swapchain_builder.clone(), self.surface, self.chosen_gpu,
-            self.device.as_ref().unwrap(),
-                                          ash::extensions::khr::Swapchain
-                                          ::new(self.instance.as_ref().unwrap(),
-                                          self.device.as_ref().unwrap()), self.swapchain_extent);
+            self.get_device(), ash::extensions::khr::Swapchain::new(self.instance.as_ref().unwrap(),
+                                          self.get_device()), self.swapchain_extent);
 
 
-
+        swapchain_builder2.acquire(self.get_device(),
+                                   self.surface_dev.as_ref().unwrap(),
+                                   1000000000, false)
+            .expect("Unable to acquire images");
         self.swapchain = Some(swapchain_builder2);
+        self.swapchain_dev = Some(ash::extensions::khr::Swapchain::new(
+            self.instance.as_ref().unwrap(),
+            self.device.as_ref().unwrap()
+        ));
         self.swapchain_images = self.swapchain.as_ref().unwrap().images().to_vec();
         self.swapchain_image_views = self.create_image_views(&self.swapchain_images);
     }
@@ -272,7 +431,7 @@ impl VulkanEngine{
                 .components(components)
                 .subresource_range(subresource_range);
 
-            image_views.push(self.device.as_ref().unwrap().create_image_view(&info, None)
+            image_views.push(self.get_device().create_image_view(&info, None)
                 .expect("Unable to make image view"));
         }
         image_views
@@ -282,24 +441,61 @@ impl VulkanEngine{
         self.swapchain.as_mut().unwrap().destroy(self.device.as_ref().unwrap());
 
         for image in &self.swapchain_image_views{
-            self.device.as_ref().unwrap().destroy_image_view(*image, None);
+            self.get_device().destroy_image_view(*image, None);
         }
     }
 
     unsafe fn init_commands(&mut self){
+        let command_pool_info = command_pool_create_info(
+            self.graphics_queue_family,
+            CommandPoolCreateFlags::RESET_COMMAND_BUFFER
+        );
 
+        for i in 0..FRAME_OVERLAP{
+            self.frames[i].command_pool = self.get_device().create_command_pool(&command_pool_info, None)
+                .expect("Unable to build command pool");
+
+            let command_buffer_info = command_buffer_allocate_info(
+                self.frames[i].command_pool,
+                1
+            );
+
+            self.frames[i].command_buffer = *self.get_device().allocate_command_buffers(&command_buffer_info)
+                .expect("Unable to create command buffer").first()
+                .expect("No Command Buffers Found");
+        }
     }
 
     unsafe fn init_sync_structures(&mut self){
+        let fence_info = fence_create_info(vk::FenceCreateFlags::SIGNALED);
+        let semaphore_info = semaphore_create_info();
 
+        for i in 0..FRAME_OVERLAP{
+            self.frames[i].render_fence = self.get_device().create_fence(&fence_info, None)
+                .expect("Unable to create fence!");
+
+            self.frames[i].render_semaphore = self.get_device()
+                .create_semaphore(&semaphore_info, None)
+                .expect("Unable to create semaphore!");
+        }
     }
 
     pub unsafe fn cleanup(&mut self){
-        if (self.is_initialized){
+        if self.is_initialized{
+            self.get_device().device_wait_idle()
+                .expect("Unable to wait idle");
+
+            for i in 0..FRAME_OVERLAP{
+                self.get_device().destroy_command_pool(self.frames[i].command_pool, None);
+
+                self.get_device().destroy_fence(self.frames[i].render_fence, None);
+                self.get_device().destroy_semaphore(self.frames[i].render_semaphore, None);
+            }
+
             self.destroy_swapchain();
 
             self.surface_dev.as_ref().unwrap().destroy_surface(self.surface, None);
-            self.device.as_ref().unwrap().destroy_device(None);
+            self.get_device().destroy_device(None);
             self.debug_utils.as_ref().unwrap().destroy_debug_utils_messenger(self.debug_messenger, None);
             self.instance.as_ref().unwrap().destroy_instance(None);
         }
