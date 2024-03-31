@@ -6,20 +6,46 @@ use ash::vk::{CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
 use super::vk_initializers::*;
 use super::vk_image;
+use vk_mem;
 
 const USE_VALIDATION_LAYERS: bool = true;
 
-#[derive(Default, Copy, Clone)]
-pub struct FrameData {
+#[derive(Default, Clone)]
+struct DeletionQueue<'a>{
+    deletors: std::collections::VecDeque<&'a dyn Fn()>
+}
+
+impl<'a> DeletionQueue<'a>{
+    pub fn new() -> Self{
+        Self{
+            deletors: std::collections::VecDeque::new()
+        }
+    }
+    pub fn push_function(&mut self, func: &'a dyn Fn()){
+        self.deletors.push_back(func);
+    }
+
+    pub fn flush(&mut self){
+        for func in self.deletors.iter().enumerate(){
+            func.1()
+        }
+
+        self.deletors.clear();
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct FrameData<'a> {
     command_pool: ash::vk::CommandPool,
     command_buffer: ash::vk::CommandBuffer,
     render_semaphore: ash::vk::Semaphore,
     render_fence: ash::vk::Fence,
+    deletion_queue: DeletionQueue<'a>,
 }
 
 const FRAME_OVERLAP: usize = 2;
 
-pub struct VulkanEngine{
+pub struct VulkanEngine<'a>{
     pub sdl: sdl2::Sdl,
     pub video: sdl2::VideoSubsystem,
     pub window: sdl2::video::Window,
@@ -45,14 +71,22 @@ pub struct VulkanEngine{
     pub swapchain_image_views: Vec<ash::vk::ImageView>,
     pub swapchain_extent: ash::vk::Extent2D,
     
-    pub frames: [FrameData; FRAME_OVERLAP],
+    pub frames: Vec<FrameData<'a>>,
     pub graphics_queue: ash::vk::Queue,
-    pub graphics_queue_family: u32
+    pub graphics_queue_family: u32,
+
+    pub allocator: Option<vk_mem::Allocator>,
+
+    pub main_deletion_queue: DeletionQueue<'a>,
 }
 
-impl VulkanEngine{
+impl<'a> VulkanEngine<'a>{
     pub fn get_current_frame(&self) -> &FrameData{
         &self.frames[self.frame_number as usize % FRAME_OVERLAP]
+    }
+
+    pub fn flush_current_frame(&mut self){
+        &self.frames[self.frame_number as usize % FRAME_OVERLAP].deletion_queue.flush();
     }
 
     #[inline]
@@ -102,9 +136,17 @@ impl VulkanEngine{
             swapchain_images: vec![],
             swapchain_image_views: vec![],
             swapchain_extent: std::default::Default::default(),
-            frames: [FrameData::default(); 2],
+            frames: {
+                let mut frames: Vec<FrameData<'a>> = vec![];
+                for _ in 0..FRAME_OVERLAP{
+                    frames.push(FrameData::default());
+                }
+                frames
+            },
             graphics_queue: Default::default(),
             graphics_queue_family: 0,
+            allocator: None,
+            main_deletion_queue: Default::default(),
         }
     }
 
@@ -161,6 +203,8 @@ impl VulkanEngine{
         self.get_device().wait_for_fences(&[self.get_current_frame().render_fence],
                                           true, 1000000000)
             .expect("Unable to wait for fence");
+
+        self.flush_current_frame();
 
         self.get_device().reset_fences(&[self.get_current_frame().render_fence])
             .expect("Unable to reset fence!");
@@ -350,6 +394,16 @@ impl VulkanEngine{
         self.graphics_queue = self.get_device()
             .get_device_queue(self.graphics_queue_family, 0);
 
+        let allocator_info = vk_mem::AllocatorCreateInfo::new(
+            self.instance.as_ref().unwrap(),
+            self.device.as_ref().unwrap(),
+            self.chosen_gpu
+        )
+            .flags(vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS);
+
+        self.allocator = Some(vk_mem::Allocator::new(allocator_info)
+            .expect("Unable to create the allocator!"));
+
         Ok(())
     }
 
@@ -484,6 +538,8 @@ impl VulkanEngine{
         if self.is_initialized{
             self.get_device().device_wait_idle()
                 .expect("Unable to wait idle");
+
+            self.main_deletion_queue.flush();
 
             for i in 0..FRAME_OVERLAP{
                 self.get_device().destroy_command_pool(self.frames[i].command_pool, None);
