@@ -6,13 +6,16 @@ use ash::vk::{CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
 use super::vk_initializers::*;
 use super::vk_image;
+use super::vk_types;
 use vk_mem;
+use vk_mem::Alloc;
+use crate::engine::vk_image::copy_image_to_image;
 
 const USE_VALIDATION_LAYERS: bool = true;
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 struct DeletionQueue<'a>{
-    deletors: std::collections::VecDeque<&'a dyn Fn()>
+    deletors: std::collections::VecDeque<&'a mut dyn FnMut()>
 }
 
 impl<'a> DeletionQueue<'a>{
@@ -21,7 +24,7 @@ impl<'a> DeletionQueue<'a>{
             deletors: std::collections::VecDeque::new()
         }
     }
-    pub fn push_function(&mut self, func: &'a dyn Fn()){
+    pub fn push_function(&mut self, func: &'a mut dyn FnMut()){
         self.deletors.push_back(func);
     }
 
@@ -77,6 +80,9 @@ pub struct VulkanEngine<'a>{
 
     pub allocator: Option<vk_mem::Allocator>,
 
+    pub draw_image: vk_types::AllocatedImage,
+    pub draw_extent: vk::Extent2D,
+
     pub main_deletion_queue: DeletionQueue<'a>,
 }
 
@@ -86,7 +92,7 @@ impl<'a> VulkanEngine<'a>{
     }
 
     pub fn flush_current_frame(&mut self){
-        &self.frames[self.frame_number as usize % FRAME_OVERLAP].deletion_queue.flush();
+        self.frames[self.frame_number as usize % FRAME_OVERLAP].deletion_queue.flush();
     }
 
     #[inline]
@@ -146,6 +152,8 @@ impl<'a> VulkanEngine<'a>{
             graphics_queue: Default::default(),
             graphics_queue_family: 0,
             allocator: None,
+            draw_image: Default::default(),
+            draw_extent: Default::default(),
             main_deletion_queue: Default::default(),
         }
     }
@@ -227,27 +235,27 @@ impl<'a> VulkanEngine<'a>{
             .expect("Unable to begin command buffer!");
 
         vk_image::transition_image(self.get_device(),
-        cmd, self.swapchain_images[swapchain_image.frame_index],
+        cmd, self.draw_image.image,
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
 
-        let mut clear_value;
-
-        let flash = glm::abs(glm::cos(self.frame_number as f32 / 120.0));
-        clear_value = vk::ClearColorValue::default();
-        clear_value.float32[2] = flash;
-        clear_value.float32[3] = 1.0;
-
-        let clear_range = image_subresource_range(
-            vk::ImageAspectFlags::COLOR
-        );
-
-        self.get_device().cmd_clear_color_image(cmd,
-        self.swapchain_images[swapchain_image.frame_index],
-        vk::ImageLayout::GENERAL, &clear_value, &[clear_range.build()]);
+        self.draw_background(cmd);
 
         vk_image::transition_image(self.get_device(),
+                                   cmd, self.draw_image.image,
+                                   vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
+        vk_image::transition_image(self.get_device(),
         cmd, self.swapchain_images[swapchain_image.frame_index],
-        vk::ImageLayout::GENERAL, vk::ImageLayout::PRESENT_SRC_KHR);
+        vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+
+        copy_image_to_image(self.get_device(), cmd,
+                            self.draw_image.image,
+        self.swapchain_images[swapchain_image.frame_index],
+            self.draw_extent, self.swapchain_extent);
+
+        vk_image::transition_image(self.get_device(),
+                                   cmd, self.swapchain_images[swapchain_image.frame_index],
+                                   vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                   vk::ImageLayout::PRESENT_SRC_KHR);
 
         self.get_device().end_command_buffer(cmd)
             .expect("Unable to end command buffer!");
@@ -299,6 +307,24 @@ impl<'a> VulkanEngine<'a>{
             .expect("Unable to reset fence!");
         self.frame_number += 1;
         println!("Frame Number: {}", self.frame_number);
+    }
+
+    pub unsafe fn draw_background(&mut self, cmd: vk::CommandBuffer){
+        let mut clear_value;
+
+        let flash = glm::abs(glm::cos(self.frame_number as f32 / 120.0));
+        clear_value = vk::ClearColorValue::default();
+        clear_value.float32[2] = flash;
+        clear_value.float32[3] = 1.0;
+
+        let clear_range = image_subresource_range(
+            vk::ImageAspectFlags::COLOR
+        );
+
+        self.get_device().cmd_clear_color_image(cmd,
+                                                self.draw_image.image,
+                                                vk::ImageLayout::GENERAL, &clear_value,
+                                                &[clear_range.build()]);
     }
 
 
@@ -421,6 +447,7 @@ impl<'a> VulkanEngine<'a>{
 
     unsafe fn init_swapchain(&mut self){
         self.create_swapchain(800,600);
+
     }
 
     unsafe fn create_swapchain(&mut self, width: u32, height: u32){
@@ -457,6 +484,57 @@ impl<'a> VulkanEngine<'a>{
         ));
         self.swapchain_images = self.swapchain.as_ref().unwrap().images().to_vec();
         self.swapchain_image_views = self.create_image_views(&self.swapchain_images);
+
+        let draw_image_extent = vk::Extent3D::builder()
+            .width(width)
+            .height(height)
+            .depth(1)
+            .build();
+
+        self.draw_image.image_format = vk::Format::R16G16B16A16_SFLOAT;
+        self.draw_image.image_extent = draw_image_extent;
+
+        let mut draw_image_usages = vk::ImageUsageFlags::empty();
+        draw_image_usages |= vk::ImageUsageFlags::TRANSFER_SRC;
+        draw_image_usages |= vk::ImageUsageFlags::TRANSFER_DST;
+        draw_image_usages |= vk::ImageUsageFlags::STORAGE;
+        draw_image_usages |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+
+        let rimg_info = image_create_info(
+            self.draw_image.image_format,
+            draw_image_usages,
+            self.draw_image.image_extent);
+
+        let mut rimg_allocinfo = vk_mem::AllocationCreateInfo::default();
+        rimg_allocinfo.usage = vk_mem::MemoryUsage::AutoPreferDevice;
+        rimg_allocinfo.required_flags = {
+            let mut flags = vk::MemoryPropertyFlags::default();
+            flags |= vk::MemoryPropertyFlags::DEVICE_LOCAL;
+            flags
+        };
+
+        let image_output =
+            self.allocator.as_ref().unwrap().create_image(&rimg_info, &rimg_allocinfo)
+            .expect("Unable to create image!");
+        self.draw_image.image = image_output.0;
+        self.draw_image.allocation = Some(image_output.1);
+
+        let image_view_info = imageview_create_info(
+            self.draw_image.image_format,
+            self.draw_image.image,
+            vk::ImageAspectFlags::COLOR
+        );
+
+        self.get_device().create_image_view(&image_view_info, None)
+            .expect("Unable to create image view!");
+
+        let delete_func = Box::new(|| {
+            self.get_device().destroy_image_view(self.draw_image.image_view, None);
+            self.allocator.as_ref().unwrap().destroy_image(self.draw_image.image,
+                                                           self.draw_image.allocation.as_mut().unwrap());
+        });
+        self.main_deletion_queue.push_function(delete_func.as_mut());
+
     }
 
     unsafe fn create_image_views(&self, images: &Vec<ash::vk::Image>)

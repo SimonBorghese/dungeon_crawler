@@ -68,3 +68,33 @@ pub fn submit_info<'a>(
         .signal_semaphore_infos(signal_semaphore)
         .command_buffer_infos(cmd)
 }
+
+pub fn image_create_info(format: vk::Format, usage_flags: vk::ImageUsageFlags, extent: vk::Extent3D)
+-> vk::ImageCreateInfoBuilder<'static>{
+    vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(extent)
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(usage_flags)
+}
+
+pub fn imageview_create_info(format: vk::Format, image: vk::Image, aspect_flags: vk::ImageAspectFlags)
+-> vk::ImageViewCreateInfoBuilder<'static> {
+    let resource_range = vk::ImageSubresourceRange::builder()
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .aspect_mask(aspect_flags)
+        .build();
+
+    vk::ImageViewCreateInfo::builder()
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .image(image)
+        .format(format)
+        .subresource_range(resource_range)
+}
