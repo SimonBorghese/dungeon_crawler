@@ -1,7 +1,7 @@
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
-use ash::vk;
+use ash::{Device, vk};
 use ash::vk::{CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
 use super::vk_initializers::*;
@@ -14,21 +14,22 @@ use crate::engine::vk_image::copy_image_to_image;
 const USE_VALIDATION_LAYERS: bool = true;
 
 #[derive(Default)]
-struct DeletionQueue<'a>{
-    deletors: std::collections::VecDeque<&'a mut dyn FnMut()>
+pub struct DeletionQueue{
+    pub deletors: std::collections::VecDeque<Box<dyn Fn()>>
 }
 
-impl<'a> DeletionQueue<'a>{
+impl DeletionQueue{
     pub fn new() -> Self{
         Self{
             deletors: std::collections::VecDeque::new()
         }
     }
-    pub fn push_function(&mut self, func: &'a mut dyn FnMut()){
+    pub fn push_function(&mut self, func: Box<dyn Fn()>){
         self.deletors.push_back(func);
     }
 
     pub fn flush(&mut self){
+
         for func in self.deletors.iter().enumerate(){
             func.1()
         }
@@ -37,18 +38,18 @@ impl<'a> DeletionQueue<'a>{
     }
 }
 
-#[derive(Default, Clone)]
-pub struct FrameData<'a> {
+#[derive(Default)]
+pub struct FrameData {
     command_pool: ash::vk::CommandPool,
     command_buffer: ash::vk::CommandBuffer,
     render_semaphore: ash::vk::Semaphore,
     render_fence: ash::vk::Fence,
-    deletion_queue: DeletionQueue<'a>,
+    deletion_queue: DeletionQueue,
 }
 
 const FRAME_OVERLAP: usize = 2;
 
-pub struct VulkanEngine<'a>{
+pub struct VulkanEngine{
     pub sdl: sdl2::Sdl,
     pub video: sdl2::VideoSubsystem,
     pub window: sdl2::video::Window,
@@ -74,7 +75,7 @@ pub struct VulkanEngine<'a>{
     pub swapchain_image_views: Vec<ash::vk::ImageView>,
     pub swapchain_extent: ash::vk::Extent2D,
     
-    pub frames: Vec<FrameData<'a>>,
+    pub frames: Vec<FrameData>,
     pub graphics_queue: ash::vk::Queue,
     pub graphics_queue_family: u32,
 
@@ -83,16 +84,17 @@ pub struct VulkanEngine<'a>{
     pub draw_image: vk_types::AllocatedImage,
     pub draw_extent: vk::Extent2D,
 
-    pub main_deletion_queue: DeletionQueue<'a>,
+    pub main_deletion_queue: DeletionQueue,
 }
 
-impl<'a> VulkanEngine<'a>{
+impl VulkanEngine{
     pub fn get_current_frame(&self) -> &FrameData{
         &self.frames[self.frame_number as usize % FRAME_OVERLAP]
     }
 
     pub fn flush_current_frame(&mut self){
-        self.frames[self.frame_number as usize % FRAME_OVERLAP].deletion_queue.flush();
+        self.frames[self.frame_number as usize % FRAME_OVERLAP].deletion_queue
+            .flush();
     }
 
     #[inline]
@@ -143,7 +145,7 @@ impl<'a> VulkanEngine<'a>{
             swapchain_image_views: vec![],
             swapchain_extent: std::default::Default::default(),
             frames: {
-                let mut frames: Vec<FrameData<'a>> = vec![];
+                let mut frames: Vec<FrameData> = vec![];
                 for _ in 0..FRAME_OVERLAP{
                     frames.push(FrameData::default());
                 }
@@ -244,7 +246,7 @@ impl<'a> VulkanEngine<'a>{
                                    cmd, self.draw_image.image,
                                    vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         vk_image::transition_image(self.get_device(),
-        cmd, self.swapchain_images[swapchain_image.frame_index],
+        cmd, self.swapchain_images[swapchain_image.image_index],
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
 
         copy_image_to_image(self.get_device(), cmd,
@@ -253,7 +255,7 @@ impl<'a> VulkanEngine<'a>{
             self.draw_extent, self.swapchain_extent);
 
         vk_image::transition_image(self.get_device(),
-                                   cmd, self.swapchain_images[swapchain_image.frame_index],
+                                   cmd, self.swapchain_images[swapchain_image.image_index],
                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                    vk::ImageLayout::PRESENT_SRC_KHR);
 
@@ -528,12 +530,16 @@ impl<'a> VulkanEngine<'a>{
         self.get_device().create_image_view(&image_view_info, None)
             .expect("Unable to create image view!");
 
-        let delete_func = Box::new(|| {
-            self.get_device().destroy_image_view(self.draw_image.image_view, None);
-            self.allocator.as_ref().unwrap().destroy_image(self.draw_image.image,
-                                                           self.draw_image.allocation.as_mut().unwrap());
+        //let device = &self.device;
+        //let draw_image = &self.draw_image;
+
+        let mut delete_func = (move || {
+            //device.as_ref().unwrap().destroy_image_view(draw_image.image_view, None);
+            //device.as_ref().unwrap().destroy_image(draw_image.image, None);
+            println!("tried to delete :(");
         });
-        self.main_deletion_queue.push_function(delete_func.as_mut());
+
+        self.main_deletion_queue.push_function(Box::new(delete_func));
 
     }
 

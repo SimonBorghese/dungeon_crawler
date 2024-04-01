@@ -23,6 +23,7 @@ dependencies = [
 [[package]]
 name = "ash-bootstrap"
 version = "0.3.1"
+source = "git+https://github.com/SimonBorghese/vk-firewood-rs?branch=main#e6fc391958921dee216a4128325c0b3c6255c86b"
 dependencies = [
  "ash",
  "ash-window",

@@ -76,3 +76,7 @@ pub unsafe fn copy_image_to_image(
 
     device.cmd_blit_image2(cmd, &blit_info);
 }
+
+pub struct GPUImage{
+
+}

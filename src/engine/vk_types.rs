@@ -10,4 +10,7 @@ pub struct AllocatedImage{
     pub allocation: Option<vk_mem::Allocation>,
     pub image_extent: vk::Extent3D,
     pub image_format: vk::Format,
+    pub allocator: Option<vk_mem::Allocator>,
 }
+
+
