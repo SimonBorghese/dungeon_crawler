@@ -11,11 +11,12 @@ use vk_mem;
 use vk_mem::Alloc;
 use crate::engine::vk_image::copy_image_to_image;
 
+
 const USE_VALIDATION_LAYERS: bool = true;
 
 #[derive(Default)]
 pub struct DeletionQueue{
-    pub deletors: std::collections::VecDeque<Box<dyn Fn()>>
+    pub deletors: std::collections::VecDeque<Box<dyn Fn(&VulkanEngine)>>
 }
 
 impl DeletionQueue{
@@ -24,16 +25,18 @@ impl DeletionQueue{
             deletors: std::collections::VecDeque::new()
         }
     }
-    pub fn push_function(&mut self, func: Box<dyn Fn()>){
+    pub fn push_function(&mut self, func: Box<dyn Fn(&VulkanEngine)>){
         self.deletors.push_back(func);
     }
 
-    pub fn flush(&mut self){
+    pub fn flush(&self, engine: &VulkanEngine){
 
         for func in self.deletors.iter().enumerate(){
-            func.1()
+            func.1(engine)
         }
+    }
 
+    pub fn clear(&mut self){
         self.deletors.clear();
     }
 }
@@ -88,13 +91,8 @@ pub struct VulkanEngine{
 }
 
 impl VulkanEngine{
-    pub fn get_current_frame(&self) -> &FrameData{
-        &self.frames[self.frame_number as usize % FRAME_OVERLAP]
-    }
-
-    pub fn flush_current_frame(&mut self){
-        self.frames[self.frame_number as usize % FRAME_OVERLAP].deletion_queue
-            .flush();
+    pub fn get_current_frame(&self) -> usize{
+        self.frame_number as usize % FRAME_OVERLAP
     }
 
     #[inline]
@@ -210,13 +208,14 @@ impl VulkanEngine{
     }
 
     unsafe fn draw(&mut self){
-        self.get_device().wait_for_fences(&[self.get_current_frame().render_fence],
+        let current_frame = &self.frames[self.get_current_frame()];
+        self.get_device().wait_for_fences(&[current_frame.render_fence],
                                           true, 1000000000)
             .expect("Unable to wait for fence");
 
-        self.flush_current_frame();
+        current_frame.deletion_queue.flush(self);
 
-        self.get_device().reset_fences(&[self.get_current_frame().render_fence])
+        self.get_device().reset_fences(&[current_frame.render_fence])
             .expect("Unable to reset fence!");
 
         let swapchain_image = self.swapchain.as_mut().unwrap()
@@ -224,7 +223,7 @@ impl VulkanEngine{
                      1000000000, false)
             .expect("Unable to acquire swapchain image");
 
-        let cmd = self.get_current_frame().command_buffer;
+        let cmd = current_frame.command_buffer;
 
         self.get_device().reset_command_buffer(cmd, Default::default())
             .expect("Unable to reset command buffer!");
@@ -251,7 +250,7 @@ impl VulkanEngine{
 
         copy_image_to_image(self.get_device(), cmd,
                             self.draw_image.image,
-        self.swapchain_images[swapchain_image.frame_index],
+        self.swapchain_images[swapchain_image.image_index],
             self.draw_extent, self.swapchain_extent);
 
         vk_image::transition_image(self.get_device(),
@@ -274,7 +273,7 @@ impl VulkanEngine{
 
         let signal_info = semaphore_submit_info(
             vk::PipelineStageFlags2::ALL_GRAPHICS,
-            self.get_current_frame().render_semaphore
+            current_frame.render_semaphore
         ).build();
 
         let submit = submit_info(&[cmd_info],
@@ -283,7 +282,7 @@ impl VulkanEngine{
             .build();
 
         self.get_device().queue_submit2(self.graphics_queue, &[submit],
-        self.get_current_frame().render_fence)
+                                        current_frame.render_fence)
             .expect("Unable to submit queue");
 
         /*
@@ -296,11 +295,11 @@ impl VulkanEngine{
             .image_indices(&image_index);
 
         self.swapchain_dev.as_ref().unwrap().queue_present(self.graphics_queue, &present_info)
-            .expect("Unable t opresent");
+            .expect("Unable to present");
 
          */
 
-        let semaphore = self.get_current_frame().render_semaphore;
+        let semaphore = current_frame.render_semaphore;
         self.swapchain.as_mut().unwrap().queue_present(self.graphics_queue,
                                                        semaphore, swapchain_image.image_index)
             .expect("Unable to present image!");
@@ -311,7 +310,7 @@ impl VulkanEngine{
         println!("Frame Number: {}", self.frame_number);
     }
 
-    pub unsafe fn draw_background(&mut self, cmd: vk::CommandBuffer){
+    pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
         let mut clear_value;
 
         let flash = glm::abs(glm::cos(self.frame_number as f32 / 120.0));
@@ -533,9 +532,13 @@ impl VulkanEngine{
         //let device = &self.device;
         //let draw_image = &self.draw_image;
 
-        let mut delete_func = (move || {
-            //device.as_ref().unwrap().destroy_image_view(draw_image.image_view, None);
-            //device.as_ref().unwrap().destroy_image(draw_image.image, None);
+        let mut delete_func = (|device: &VulkanEngine| {
+
+            device.allocator.as_ref().unwrap().free_memory(
+                device.draw_image.allocation.as_ref().unwrap()
+            );
+            device.get_device().destroy_image_view(device.draw_image.image_view, None);
+            device.get_device().destroy_image(device.draw_image.image, None);
             println!("tried to delete :(");
         });
 
@@ -623,7 +626,7 @@ impl VulkanEngine{
             self.get_device().device_wait_idle()
                 .expect("Unable to wait idle");
 
-            self.main_deletion_queue.flush();
+            self.main_deletion_queue.flush(self);
 
             for i in 0..FRAME_OVERLAP{
                 self.get_device().destroy_command_pool(self.frames[i].command_pool, None);
