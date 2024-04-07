@@ -1,12 +1,15 @@
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
-use ash::{Device, vk};
+use ash::vk;
 use ash::vk::{CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
+use glm::ceil;
 use super::vk_initializers::*;
 use super::vk_image;
 use super::vk_types;
+use super::vk_descriptor::*;
+use super::vk_pipelines::*;
 use vk_mem;
 use vk_mem::Alloc;
 use crate::engine::vk_image::copy_image_to_image;
@@ -43,10 +46,10 @@ impl DeletionQueue{
 
 #[derive(Default)]
 pub struct FrameData {
-    command_pool: ash::vk::CommandPool,
-    command_buffer: ash::vk::CommandBuffer,
-    render_semaphore: ash::vk::Semaphore,
-    render_fence: ash::vk::Fence,
+    command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
+    render_semaphore: vk::Semaphore,
+    render_fence: vk::Fence,
     deletion_queue: DeletionQueue,
 }
 
@@ -61,7 +64,7 @@ pub struct VulkanEngine{
     pub is_initialized: bool,
     pub frame_number: i32,
     pub stop_rendering: bool,
-    pub window_extent: ash::vk::Extent2D,
+    pub window_extent: vk::Extent2D,
 
     pub instance: Option<ash::Instance>,
     pub debug_messenger: ash::vk::DebugUtilsMessengerEXT,
@@ -86,6 +89,16 @@ pub struct VulkanEngine{
 
     pub draw_image: vk_types::AllocatedImage,
     pub draw_extent: vk::Extent2D,
+
+    pub global_descriptor_allocator: DescriptorAllocator,
+
+    pub draw_image_descriptors: vk::DescriptorSet,
+
+    pub draw_image_description_layout: vk::DescriptorSetLayout,
+
+    pub gradient_pipeline: vk::Pipeline,
+
+    pub gradient_pipeline_layout: vk::PipelineLayout,
 
     pub main_deletion_queue: DeletionQueue,
 }
@@ -154,6 +167,11 @@ impl VulkanEngine{
             allocator: None,
             draw_image: Default::default(),
             draw_extent: Default::default(),
+            global_descriptor_allocator: DescriptorAllocator::new(),
+            draw_image_descriptors: Default::default(),
+            draw_image_description_layout: Default::default(),
+            gradient_pipeline: Default::default(),
+            gradient_pipeline_layout: Default::default(),
             main_deletion_queue: Default::default(),
         }
     }
@@ -166,6 +184,8 @@ impl VulkanEngine{
             self.init_swapchain();
             self.init_commands();
             self.init_sync_structures();
+            self.init_descriptors();
+            self.init_pipelines();
         }
 
         self.is_initialized = true;
@@ -231,6 +251,9 @@ impl VulkanEngine{
         let cmd_begin_info = command_buffer_begin_info(
             vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
         );
+
+        self.draw_extent.width = self.draw_image.image_extent.width;
+        self.draw_extent.height = self.draw_image.image_extent.height;
 
         self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
             .expect("Unable to begin command buffer!");
@@ -311,6 +334,7 @@ impl VulkanEngine{
     }
 
     pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
+        /*
         let mut clear_value;
 
         let flash = glm::abs(glm::cos(self.frame_number as f32 / 120.0));
@@ -326,6 +350,19 @@ impl VulkanEngine{
                                                 self.draw_image.image,
                                                 vk::ImageLayout::GENERAL, &clear_value,
                                                 &[clear_range.build()]);
+                                                */
+         self.get_device().cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE,
+         self.gradient_pipeline);
+
+        let descriptors = [self.draw_image_descriptors];
+        self.get_device().cmd_bind_descriptor_sets(
+            cmd, vk::PipelineBindPoint::COMPUTE, self.gradient_pipeline_layout,
+            0, &descriptors, &[]
+        );
+
+        self.get_device().cmd_dispatch(cmd,
+        ( self.draw_extent.width  / 16 ) ,
+        ( self.draw_extent.height  / 16 ) , 1);
     }
 
 
@@ -526,7 +563,7 @@ impl VulkanEngine{
             vk::ImageAspectFlags::COLOR
         );
 
-        self.get_device().create_image_view(&image_view_info, None)
+        self.draw_image.image_view = self.get_device().create_image_view(&image_view_info, None)
             .expect("Unable to create image view!");
 
         //let device = &self.device;
@@ -619,6 +656,109 @@ impl VulkanEngine{
                 .create_semaphore(&semaphore_info, None)
                 .expect("Unable to create semaphore!");
         }
+    }
+
+    unsafe fn init_descriptors(&mut self){
+        let sizes: Vec<PoolSizeRatio> = vec![
+            PoolSizeRatio{
+                desc_type: vk::DescriptorType::STORAGE_IMAGE,
+                ratio: 1.0,
+            }
+        ];
+
+        self.global_descriptor_allocator.init_pool(self.device.as_ref().unwrap(),
+                                                   10, sizes);
+
+        let mut builder = DescriptorLayoutBuilder::new();
+        builder.add_binding(0, vk::DescriptorType::STORAGE_IMAGE);
+        self.draw_image_description_layout = builder.build(self.get_device(),
+                                                           vk::ShaderStageFlags::COMPUTE);
+
+        self.draw_image_descriptors = *self.global_descriptor_allocator
+            .allocate(self.device.as_ref().unwrap(), self.draw_image_description_layout)
+            .first()
+            .expect("Unable to get a single descriptor!");
+
+        let mut img_info = vk::DescriptorImageInfo::builder()
+            .image_layout(vk::ImageLayout::GENERAL)
+            .image_view(self.draw_image.image_view)
+            .build();
+
+        let image_infos = [img_info];
+
+        let draw_image_write = vk::WriteDescriptorSet::builder()
+            .dst_binding(0)
+            .dst_set(self.draw_image_descriptors)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .image_info(&image_infos)
+            .build();
+
+        let descriptor_writes = [draw_image_write];
+        self.get_device().update_descriptor_sets(&descriptor_writes,
+        &[]);
+    }
+
+    unsafe fn init_pipelines(&mut self){
+        self.init_background_pipelines();
+    }
+
+    unsafe fn init_background_pipelines(&mut self){
+        let layouts = [self.draw_image_description_layout];
+        let compute_layout = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(&layouts);
+
+        self.gradient_pipeline_layout = self.get_device().create_pipeline_layout(
+            &compute_layout, None
+        ).expect("Unable to create pipeline layout!");
+
+        let compute_module = load_shader_module(
+            String::from("shaders/gradient_comp.spv"),
+            self.get_device()
+        )
+            .expect("Unable to make compute shader module!");
+
+        let mut stage_info = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(compute_module);
+
+        stage_info.p_name = "main\0".as_ptr() as _;
+
+        let compute_pipeline_create_info = vk::ComputePipelineCreateInfo::builder()
+            .layout(self.gradient_pipeline_layout)
+            .stage(stage_info.build());
+
+        let pipelines = [compute_pipeline_create_info
+            .build()];
+
+        self.gradient_pipeline =
+            *self.get_device().create_compute_pipelines(
+                vk::PipelineCache::null(),
+                &pipelines, None
+            ).expect("Unable to create pipeline!")
+                .first()
+                .expect("Unable to get the first pipeline!");
+
+        self.get_device().destroy_shader_module(compute_module, None);
+
+        /*
+        let delete_func = (|device: &VulkanEngine| {
+            device.get_device().destroy_pipeline_layout(self.gradient_pipeline_layout, None);
+
+            device.get_device().destroy_pipeline(self.gradient_pipeline, None);
+        });
+        self.main_deletion_queue.push_function(Box::new(delete_func));
+
+         */
+
+        let mut delete_func = (|device: &VulkanEngine| {
+
+            device.get_device().destroy_pipeline_layout(device.gradient_pipeline_layout, None);
+
+            device.get_device().destroy_pipeline(device.gradient_pipeline, None);
+            println!("tried to delete :(");
+        });
+
+        self.main_deletion_queue.push_function(Box::new(delete_func));
     }
 
     pub unsafe fn cleanup(&mut self){
