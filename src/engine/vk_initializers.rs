@@ -98,3 +98,27 @@ pub fn imageview_create_info(format: vk::Format, image: vk::Image, aspect_flags:
         .format(format)
         .subresource_range(resource_range)
 }
+
+pub fn attachment_info(view: vk::ImageView, clear: Option<vk::ClearValue>, layout: vk::ImageLayout)
+-> vk::RenderingAttachmentInfoBuilder<'static>{
+    vk::RenderingAttachmentInfo::builder()
+        .image_view(view)
+        .image_layout(layout)
+        //.load_op(vk::AttachmentLoadOp::CLEAR| vk::AttachmentLoadOp::LOAD.as_raw())
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value({
+            if clear.is_some(){
+                clear.unwrap()
+            } else{
+                vk::ClearValue::default()
+            }
+        })
+}
+
+pub fn pipeline_shader_stage_create_info(shader: vk::ShaderStageFlags, module: vk::ShaderModule)
+-> vk::PipelineShaderStageCreateInfoBuilder<'static>{
+    vk::PipelineShaderStageCreateInfo::builder()
+        .stage(shader)
+        .module(module)
+        .name(unsafe{std::ffi::CStr::from_ptr(b"main\0".as_ptr() as _)})
+}

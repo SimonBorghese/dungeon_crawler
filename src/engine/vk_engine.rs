@@ -1,19 +1,24 @@
+use std::io::Read;
+use std::sync::{Arc, Mutex};
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
+use ash::extensions::khr::DynamicRendering;
 use ash::vk;
-use ash::vk::{CommandPoolCreateFlags, Handle};
+use ash::vk::{CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
-use glm::ceil;
 use super::vk_initializers::*;
 use super::vk_image;
 use super::vk_types;
 use super::vk_descriptor::*;
 use super::vk_pipelines::*;
+use super::vk_image::*;
 use vk_mem;
 use vk_mem::Alloc;
-use crate::engine::vk_image::copy_image_to_image;
-
+use imgui;
+use imgui::DrawData;
+use imgui_rs_vulkan_renderer;
+use imgui_sdl2;
 
 const USE_VALIDATION_LAYERS: bool = true;
 
@@ -29,7 +34,7 @@ impl DeletionQueue{
         }
     }
     pub fn push_function(&mut self, func: Box<dyn Fn(&VulkanEngine)>){
-        self.deletors.push_back(func);
+        self.deletors.push_front(func);
     }
 
     pub fn flush(&self, engine: &VulkanEngine){
@@ -99,6 +104,22 @@ pub struct VulkanEngine{
     pub gradient_pipeline: vk::Pipeline,
 
     pub gradient_pipeline_layout: vk::PipelineLayout,
+
+    pub imm_fence: vk::Fence,
+
+    pub imm_command_buffer: vk::CommandBuffer,
+
+    pub imm_command_pool: vk::CommandPool,
+
+    pub im_context: Option<imgui::Context>,
+
+    pub im_sdl2: Option<imgui_sdl2::ImguiSdl2>,
+
+    pub im_render: Option<imgui_rs_vulkan_renderer::Renderer>,
+
+    pub triangle_pipeline_layout: vk::PipelineLayout,
+
+    pub triangle_pipeline: vk::Pipeline,
 
     pub main_deletion_queue: DeletionQueue,
 }
@@ -172,7 +193,15 @@ impl VulkanEngine{
             draw_image_description_layout: Default::default(),
             gradient_pipeline: Default::default(),
             gradient_pipeline_layout: Default::default(),
+            imm_fence: Default::default(),
+            imm_command_buffer: Default::default(),
+            imm_command_pool: Default::default(),
+            im_context: None,
+            im_sdl2: None,
+            im_render: None,
+            triangle_pipeline_layout: Default::default(),
             main_deletion_queue: Default::default(),
+            triangle_pipeline: Default::default(),
         }
     }
 
@@ -186,6 +215,7 @@ impl VulkanEngine{
             self.init_sync_structures();
             self.init_descriptors();
             self.init_pipelines();
+            self.init_imgui();
         }
 
         self.is_initialized = true;
@@ -224,6 +254,45 @@ impl VulkanEngine{
             unsafe{
                 self.draw();
             }
+        }
+    }
+
+    pub fn immediate_submit(&mut self, cmd: vk::CommandBuffer){
+        unsafe {
+            let fences = [self.imm_fence];
+            self.get_device().reset_fences(&fences)
+                .expect("Unable to reset fences!");
+
+            self.get_device().reset_command_buffer(self.imm_command_buffer,
+            CommandBufferResetFlags::empty())
+                .expect("Unable to reset command buffer!");
+
+            //let cmd = self.imm_command_buffer;
+            let cmd_begin_info = command_buffer_begin_info(
+                vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
+            );
+
+            self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
+                .expect("Unable to begin command buffer!");
+
+           self.draw_background(cmd);
+
+            self.get_device().end_command_buffer(cmd)
+                .expect("Unable to end command buffer!");
+
+            let cmd_info = command_buffer_submit_info(cmd).build();
+            let cmd_infos = [cmd_info];
+            let submit = submit_info(&cmd_infos,
+                                     &[],
+                                     &[])
+                .build();
+
+            let submits=  [submit];
+            self.get_device().queue_submit2(self.graphics_queue, &submits, self.imm_fence)
+                .expect("Unable to submit to queue!");
+
+            self.get_device().wait_for_fences(&fences, true, u64::MAX)
+                .expect("Unable to wait for fence!");
         }
     }
 
@@ -334,23 +403,6 @@ impl VulkanEngine{
     }
 
     pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
-        /*
-        let mut clear_value;
-
-        let flash = glm::abs(glm::cos(self.frame_number as f32 / 120.0));
-        clear_value = vk::ClearColorValue::default();
-        clear_value.float32[2] = flash;
-        clear_value.float32[3] = 1.0;
-
-        let clear_range = image_subresource_range(
-            vk::ImageAspectFlags::COLOR
-        );
-
-        self.get_device().cmd_clear_color_image(cmd,
-                                                self.draw_image.image,
-                                                vk::ImageLayout::GENERAL, &clear_value,
-                                                &[clear_range.build()]);
-                                                */
          self.get_device().cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE,
          self.gradient_pipeline);
 
@@ -375,6 +427,7 @@ impl VulkanEngine{
         let data = unsafe { *data };
         let message = unsafe { std::ffi::CStr::from_ptr(data.p_message) }.to_string_lossy();
 
+        println!("================VULKAN ERROR===================");
         if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
             println!("({:?}) {}", type_, message);
         } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
@@ -384,6 +437,7 @@ impl VulkanEngine{
         } else {
             println!("({:?}) {}", type_, message);
         }
+        println!("-------------------------------------------------\n\n\n");
 
         vk::FALSE
     }
@@ -417,7 +471,15 @@ impl VulkanEngine{
         self.surface_dev =
             Some(ash::extensions::khr::Surface::new(&self.entry, self.instance.as_ref().unwrap()));
 
-        let vulkan_13_features =
+        let shader_objects = vk::PhysicalDeviceShaderObjectFeaturesEXT::builder()
+            .shader_object(true)
+            .build();
+
+        let mut vulkan_11_features = ash::vk::PhysicalDeviceVulkan11Features::builder()
+            .build();
+
+
+        let mut vulkan_13_features =
             ash::vk::PhysicalDeviceVulkan13Features::builder()
             .dynamic_rendering(true)
             .synchronization2(true)
@@ -429,6 +491,7 @@ impl VulkanEngine{
             .descriptor_indexing(true)
             .build();
 
+        vulkan_11_features.p_next = &shader_objects as *const _ as *mut _;
         vulkan_12_features.p_next = &vulkan_13_features as *const _ as *mut _;
 
         let mut features = ash::vk::PhysicalDeviceFeatures2::builder()
@@ -437,10 +500,12 @@ impl VulkanEngine{
 
         let selector = ash_bootstrap::DeviceBuilder::new()
             .require_version(1,3)
-            .set_required_features_12(vulkan_12_features)
             .set_required_features_13(vulkan_13_features)
+            .set_required_features_12(vulkan_12_features)
+            .set_required_features_11(vulkan_11_features)
             .for_surface(self.surface)
             .require_extension(ash::extensions::khr::Swapchain::name().as_ptr())
+            .require_extension(ash::extensions::ext::ShaderObject::name().as_ptr())
             .queue_family(QueueFamilyCriteria::graphics_present())
             .build(self.instance.as_ref().unwrap(),
             self.surface_dev.as_ref().unwrap(), &builder.2)
@@ -642,6 +707,21 @@ impl VulkanEngine{
                 .expect("Unable to create command buffer").first()
                 .expect("No Command Buffers Found");
         }
+
+        self.imm_command_pool = self.get_device().create_command_pool(&command_pool_info, None)
+            .expect("Unable to create command pool!");
+
+        let cmd_alloc_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(self.imm_command_pool)
+            .command_buffer_count(1);
+
+        self.imm_command_buffer = *self.get_device().allocate_command_buffers(&cmd_alloc_info)
+            .expect("Unable to allocate command buffer!")
+            .first().expect("Unable to get single command buffer");
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.get_device().destroy_command_pool(device.imm_command_pool, None);
+        }));
     }
 
     unsafe fn init_sync_structures(&mut self){
@@ -656,6 +736,13 @@ impl VulkanEngine{
                 .create_semaphore(&semaphore_info, None)
                 .expect("Unable to create semaphore!");
         }
+
+        self.imm_fence = self.get_device().create_fence(&fence_info, None)
+            .expect("Unable to create fence!");
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.get_device().destroy_fence(device.imm_fence, None);
+        }));
     }
 
     unsafe fn init_descriptors(&mut self){
@@ -759,6 +846,30 @@ impl VulkanEngine{
         });
 
         self.main_deletion_queue.push_function(Box::new(delete_func));
+    }
+
+    unsafe fn init_imgui(&mut self){
+        let mut imgui = imgui::Context::create();
+        let mut platform = imgui_sdl2::ImguiSdl2::new(&mut imgui, &self.window);
+        let renderer = imgui_rs_vulkan_renderer::
+        Renderer::with_default_allocator(
+            self.instance.as_ref().unwrap(),
+            self.chosen_gpu,
+            self.device.clone().unwrap(),
+            self.graphics_queue,
+            self.imm_command_pool,
+            imgui_rs_vulkan_renderer::DynamicRendering {
+                color_attachment_format: self.swapchain_image_format,
+                depth_attachment_format: None,
+            },
+            &mut imgui,
+            None
+        )
+            .expect("Unable to create ImGUI Renderer!");
+
+        self.im_context = Some(imgui);
+        self.im_sdl2 = Some(platform);
+        self.im_render = Some(renderer);
     }
 
     pub unsafe fn cleanup(&mut self){
