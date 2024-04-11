@@ -104,7 +104,8 @@ pub fn attachment_info(view: vk::ImageView, clear: Option<vk::ClearValue>, layou
     vk::RenderingAttachmentInfo::builder()
         .image_view(view)
         .image_layout(layout)
-        //.load_op(vk::AttachmentLoadOp::CLEAR| vk::AttachmentLoadOp::LOAD.as_raw())
+        .load_op(vk::AttachmentLoadOp::LOAD)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
         .clear_value({
             if clear.is_some(){
@@ -121,4 +122,8 @@ pub fn pipeline_shader_stage_create_info(shader: vk::ShaderStageFlags, module: v
         .stage(shader)
         .module(module)
         .name(unsafe{std::ffi::CStr::from_ptr(b"main\0".as_ptr() as _)})
+}
+
+pub fn pipeline_layout_create_info() -> vk::PipelineLayoutCreateInfoBuilder<'static>{
+    vk::PipelineLayoutCreateInfo::builder()
 }

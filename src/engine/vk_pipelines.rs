@@ -165,14 +165,14 @@ impl PipelineBuilder{
         self.color_attachment_format = format;
 
         self.render_info.color_attachment_count = 1;
-        self.render_info.p_color_attachment_formats = &format as *const _;
+        self.render_info.p_color_attachment_formats = &self.color_attachment_format as *const _;
     }
 
     pub fn set_depth_format(&mut self, format: vk::Format){
         self.render_info.depth_attachment_format = format;
     }
 
-    pub fn disable_depthtest(&mut self){
+    pub fn disable_depth_test(&mut self){
         self.depth_stencil.depth_test_enable = vk::FALSE;
         self.depth_stencil.depth_write_enable = vk::FALSE;
         self.depth_stencil.depth_compare_op = vk::CompareOp::NEVER;
