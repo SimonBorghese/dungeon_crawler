@@ -7,6 +7,7 @@ use ash::extensions::khr::DynamicRendering;
 use ash::vk;
 use ash::vk::{CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
+use glm::sin;
 use super::vk_initializers::*;
 use super::vk_image;
 use super::vk_types;
@@ -216,6 +217,7 @@ impl VulkanEngine{
             self.init_descriptors();
             self.init_pipelines();
             self.init_imgui();
+            self.init_triangle_pipeline();
         }
 
         self.is_initialized = true;
@@ -333,9 +335,15 @@ impl VulkanEngine{
 
         self.draw_background(cmd);
 
+        transition_image(self.get_device(),
+                         cmd, self.draw_image.image,
+                         vk::ImageLayout::GENERAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        self.draw_geometry(cmd);
+
         vk_image::transition_image(self.get_device(),
                                    cmd, self.draw_image.image,
-                                   vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
+                                   vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
         vk_image::transition_image(self.get_device(),
         cmd, self.swapchain_images[swapchain_image.image_index],
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
@@ -415,6 +423,60 @@ impl VulkanEngine{
         self.get_device().cmd_dispatch(cmd,
         ( self.draw_extent.width  / 16 ) ,
         ( self.draw_extent.height  / 16 ) , 1);
+    }
+
+    pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
+        let color_attachment = attachment_info(
+            self.draw_image.image_view, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        ).build();
+
+        let color_attachments = [color_attachment];
+
+        let render_info = vk::RenderingInfo::builder()
+            .render_area(vk::Rect2D::builder()
+                .extent(self.draw_extent)
+                .offset(vk::Offset2D::default())
+                .build())
+            .color_attachments(&color_attachments)
+            .layer_count(1);
+
+        self.get_device().cmd_begin_rendering(cmd, &render_info);
+
+        self.get_device().cmd_bind_pipeline(cmd,
+                                            vk::PipelineBindPoint::GRAPHICS,
+                                            self.triangle_pipeline);
+
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(self.draw_extent.width as f32)
+            .height(self.draw_extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0)
+            .build();
+
+        let viewports = [viewport];
+        self.get_device().cmd_set_viewport(cmd, 0, &viewports);
+
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D::builder()
+                .x(0)
+                .y(0).build())
+            .extent(self.draw_extent)
+            .build();
+
+        let scissors = [scissor];
+
+        self.get_device().cmd_set_scissor(cmd, 0, &scissors);
+
+        let floats: [f32; 1] = [0.2];
+        self.get_device().cmd_push_constants(cmd, self.triangle_pipeline_layout,
+        vk::ShaderStageFlags::VERTEX, 0, &(2.0_f32 * sin(self.frame_number as f32 / 120.0)).to_le_bytes());
+
+        self.get_device().cmd_draw(cmd, 3, 1, 0, 0);
+
+        self.get_device().cmd_end_rendering(cmd);
+
     }
 
 
@@ -870,6 +932,57 @@ impl VulkanEngine{
         self.im_context = Some(imgui);
         self.im_sdl2 = Some(platform);
         self.im_render = Some(renderer);
+    }
+
+    unsafe fn init_triangle_pipeline(&mut self){
+        let triangle_vert_shader =
+            load_shader_module(String::from("shaders/vert.spv"), self.get_device())
+                .expect("Unable to load shader module!");
+
+        let triangle_frag_shader =
+            load_shader_module(String::from("shaders/frag.spv"), self.get_device())
+                .expect("Unable to load shader module!");
+
+        let push_constant = vk::PushConstantRange::builder()
+            .offset(0)
+            .size(std::mem::size_of::<f32>() as u32)
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .build();
+        let push_constants = [push_constant];
+        let pipeline_layout_info = pipeline_layout_create_info()
+            .push_constant_ranges(&push_constants)
+            .build();
+
+        self.triangle_pipeline_layout = self.get_device().create_pipeline_layout(
+            &pipeline_layout_info, None
+        )
+            .expect("Unable to create triangle pipeline layout!");
+
+        let mut pipeline_builder = super::vk_pipelines::PipelineBuilder::new();
+        pipeline_builder.pipeline_layout = self.triangle_pipeline_layout;
+        pipeline_builder.set_color_attachment_format(self.draw_image.image_format);
+        pipeline_builder.set_shaders(triangle_vert_shader, triangle_frag_shader);
+        pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE);
+        pipeline_builder.set_multisampling_none();
+        pipeline_builder.disable_blending();
+        pipeline_builder.disable_depth_test();
+
+        pipeline_builder.set_color_attachment_format(self.draw_image.image_format);
+        pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
+
+        self.triangle_pipeline = pipeline_builder.build_pipeline(self.get_device());
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.get_device().destroy_pipeline_layout(
+                device.triangle_pipeline_layout, None
+            );
+
+            device.get_device().destroy_pipeline(
+                device.triangle_pipeline, None
+            );
+        }))
+
     }
 
     pub unsafe fn cleanup(&mut self){
