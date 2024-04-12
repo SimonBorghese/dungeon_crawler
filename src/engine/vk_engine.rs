@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::ops::BitOr;
 use std::sync::{Arc, Mutex};
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
@@ -904,7 +905,6 @@ impl VulkanEngine{
             device.get_device().destroy_pipeline_layout(device.gradient_pipeline_layout, None);
 
             device.get_device().destroy_pipeline(device.gradient_pipeline, None);
-            println!("tried to delete :(");
         });
 
         self.main_deletion_queue.push_function(Box::new(delete_func));
@@ -983,6 +983,72 @@ impl VulkanEngine{
             );
         }))
 
+    }
+
+    unsafe fn create_buffer(&mut self, alloc_size: vk::DeviceSize, usage:
+    vk::BufferUsageFlags, memory_usage:
+    vk_mem::MemoryUsage) -> vk_types::AllocatedBuffer{
+        let buffer_info = vk::BufferCreateInfo::builder()
+            .size(alloc_size)
+            .usage(usage);
+
+        let mut vma_alloc_info = vk_mem::AllocationCreateInfo::default();
+        vma_alloc_info.usage = memory_usage;
+        vma_alloc_info.flags = vk_mem::AllocationCreateFlags::MAPPED;
+
+        let mut buffer = vk_types::AllocatedBuffer::default();
+
+        (buffer.buffer, Some(buffer.allocation)) = self.allocator.as_ref().unwrap()
+            .create_buffer(&buffer_info,&vma_alloc_info)
+            .expect("Unable to create buffer!");
+
+        buffer
+    }
+
+    unsafe fn upload_mesh(&mut self, indices: &[i32], vertices: &[vk_types::Vertex])
+    -> vk_types::GPUMeshBuffers{
+        let vertex_buffer_size = vertices.len() * std::mem::size_of::<vk_types::Vertex>();
+        let index_buffer_size = indices.len() * std::mem::size_of::<i32>();
+
+        let mut new_surface = vk_types::GPUMeshBuffers::default();
+
+        new_surface.vertex_buffer = self.create_buffer(
+            vk::DeviceSize::from(vertex_buffer_size), vk::BufferUsageFlags::STORAGE_BUFFER.bitor(
+                vk::BufferUsageFlags::TRANSFER_DST.bitor(
+                    vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                )
+            ), vk_mem::MemoryUsage::AutoPreferDevice
+        );
+
+        let device_address_info = vk::BufferDeviceAddressInfo::builder()
+            .buffer(new_surface.vertex_buffer.buffer);
+        new_surface.vertex_buffer_address = self.get_device().get_buffer_device_address(
+            &device_address_info
+        );
+
+        new_surface.index_buffer = self.create_buffer(
+            vk::DeviceSize::from(index_buffer_size),
+            vk::BufferUsageFlags::INDEX_BUFFER.bitor(
+                vk::BufferUsageFlags::TRANSFER_DST
+            ), vk_mem::MemoryUsage::AutoPreferDevice
+        );
+
+        let staging = self.create_buffer(
+            vk::DeviceSize::from(
+                vertex_buffer_size + index_buffer_size
+            ),
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk_mem::MemoryUsage::AutoPreferHost
+        );
+
+        //let data = self.allocator.as_ref().unwrap().map_memory(
+
+        new_surface
+    }
+
+    unsafe fn delete_buffer(&self, buffer: &mut vk_types::AllocatedBuffer){
+        self.allocator.as_ref().unwrap()
+            .destroy_buffer(buffer.buffer, buffer.allocation.as_mut().unwrap());
     }
 
     pub unsafe fn cleanup(&mut self){
