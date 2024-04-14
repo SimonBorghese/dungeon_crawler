@@ -1,6 +1,5 @@
+#![allow(dead_code)]
 use ash;
-use std;
-use std::cmp::max;
 use ash::vk;
 
 pub struct DescriptorLayoutBuilder{

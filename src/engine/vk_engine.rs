@@ -1,10 +1,8 @@
-use std::io::Read;
+#![allow(dead_code)]
 use std::ops::BitOr;
-use std::sync::{Arc, Mutex};
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
-use ash::extensions::khr::DynamicRendering;
 use ash::vk;
 use ash::vk::{CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
@@ -18,7 +16,6 @@ use super::vk_image::*;
 use vk_mem;
 use vk_mem::Alloc;
 use imgui;
-use imgui::DrawData;
 use imgui_rs_vulkan_renderer;
 use imgui_sdl2;
 
@@ -260,7 +257,10 @@ impl VulkanEngine{
         }
     }
 
-    pub fn immediate_submit(&mut self, cmd: vk::CommandBuffer){
+    pub fn immediate_submit(&mut self, func: Box<dyn Fn(
+        &ash::Device,
+        vk::CommandBuffer
+    )>){
         unsafe {
             let fences = [self.imm_fence];
             self.get_device().reset_fences(&fences)
@@ -275,15 +275,15 @@ impl VulkanEngine{
                 vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
             );
 
-            self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
+            self.get_device().begin_command_buffer(self.imm_command_buffer, &cmd_begin_info)
                 .expect("Unable to begin command buffer!");
 
-           self.draw_background(cmd);
+           func(self.get_device(), self.imm_command_buffer);
 
-            self.get_device().end_command_buffer(cmd)
+            self.get_device().end_command_buffer(self.imm_command_buffer)
                 .expect("Unable to end command buffer!");
 
-            let cmd_info = command_buffer_submit_info(cmd).build();
+            let cmd_info = command_buffer_submit_info(self.imm_command_buffer).build();
             let cmd_infos = [cmd_info];
             let submit = submit_info(&cmd_infos,
                                      &[],
@@ -422,8 +422,8 @@ impl VulkanEngine{
         );
 
         self.get_device().cmd_dispatch(cmd,
-        ( self.draw_extent.width  / 16 ) ,
-        ( self.draw_extent.height  / 16 ) , 1);
+        self.draw_extent.width  / 16,
+        self.draw_extent.height  / 16, 1);
     }
 
     pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
@@ -470,7 +470,6 @@ impl VulkanEngine{
 
         self.get_device().cmd_set_scissor(cmd, 0, &scissors);
 
-        let floats: [f32; 1] = [0.2];
         self.get_device().cmd_push_constants(cmd, self.triangle_pipeline_layout,
         vk::ShaderStageFlags::VERTEX, 0, &(2.0_f32 * sin(self.frame_number as f32 / 120.0)).to_le_bytes());
 
@@ -542,7 +541,7 @@ impl VulkanEngine{
             .build();
 
 
-        let mut vulkan_13_features =
+        let vulkan_13_features =
             ash::vk::PhysicalDeviceVulkan13Features::builder()
             .dynamic_rendering(true)
             .synchronization2(true)
@@ -697,7 +696,7 @@ impl VulkanEngine{
         //let device = &self.device;
         //let draw_image = &self.draw_image;
 
-        let mut delete_func = (|device: &VulkanEngine| {
+        let delete_func = |device: &VulkanEngine| {
 
             device.allocator.as_ref().unwrap().free_memory(
                 device.draw_image.allocation.as_ref().unwrap()
@@ -705,7 +704,7 @@ impl VulkanEngine{
             device.get_device().destroy_image_view(device.draw_image.image_view, None);
             device.get_device().destroy_image(device.draw_image.image, None);
             println!("tried to delete :(");
-        });
+        };
 
         self.main_deletion_queue.push_function(Box::new(delete_func));
 
@@ -829,7 +828,7 @@ impl VulkanEngine{
             .first()
             .expect("Unable to get a single descriptor!");
 
-        let mut img_info = vk::DescriptorImageInfo::builder()
+        let img_info = vk::DescriptorImageInfo::builder()
             .image_layout(vk::ImageLayout::GENERAL)
             .image_view(self.draw_image.image_view)
             .build();
@@ -890,29 +889,19 @@ impl VulkanEngine{
 
         self.get_device().destroy_shader_module(compute_module, None);
 
-        /*
-        let delete_func = (|device: &VulkanEngine| {
-            device.get_device().destroy_pipeline_layout(self.gradient_pipeline_layout, None);
-
-            device.get_device().destroy_pipeline(self.gradient_pipeline, None);
-        });
-        self.main_deletion_queue.push_function(Box::new(delete_func));
-
-         */
-
-        let mut delete_func = (|device: &VulkanEngine| {
+        let delete_func = |device: &VulkanEngine| {
 
             device.get_device().destroy_pipeline_layout(device.gradient_pipeline_layout, None);
 
             device.get_device().destroy_pipeline(device.gradient_pipeline, None);
-        });
+        };
 
         self.main_deletion_queue.push_function(Box::new(delete_func));
     }
 
     unsafe fn init_imgui(&mut self){
         let mut imgui = imgui::Context::create();
-        let mut platform = imgui_sdl2::ImguiSdl2::new(&mut imgui, &self.window);
+        let platform = imgui_sdl2::ImguiSdl2::new(&mut imgui, &self.window);
         let renderer = imgui_rs_vulkan_renderer::
         Renderer::with_default_allocator(
             self.instance.as_ref().unwrap(),
@@ -998,9 +987,12 @@ impl VulkanEngine{
 
         let mut buffer = vk_types::AllocatedBuffer::default();
 
-        (buffer.buffer, Some(buffer.allocation)) = self.allocator.as_ref().unwrap()
+        let alloc = self.allocator.as_ref().unwrap()
             .create_buffer(&buffer_info,&vma_alloc_info)
             .expect("Unable to create buffer!");
+
+        buffer.buffer = alloc.0;
+        buffer.allocation = Some(alloc.1);
 
         buffer
     }
@@ -1013,7 +1005,7 @@ impl VulkanEngine{
         let mut new_surface = vk_types::GPUMeshBuffers::default();
 
         new_surface.vertex_buffer = self.create_buffer(
-            vk::DeviceSize::from(vertex_buffer_size), vk::BufferUsageFlags::STORAGE_BUFFER.bitor(
+            vk::DeviceSize::from(vertex_buffer_size as u32), vk::BufferUsageFlags::STORAGE_BUFFER.bitor(
                 vk::BufferUsageFlags::TRANSFER_DST.bitor(
                     vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 )
@@ -1027,21 +1019,61 @@ impl VulkanEngine{
         );
 
         new_surface.index_buffer = self.create_buffer(
-            vk::DeviceSize::from(index_buffer_size),
+            vk::DeviceSize::from(index_buffer_size as u32),
             vk::BufferUsageFlags::INDEX_BUFFER.bitor(
                 vk::BufferUsageFlags::TRANSFER_DST
             ), vk_mem::MemoryUsage::AutoPreferDevice
         );
 
-        let staging = self.create_buffer(
+        let mut staging = self.create_buffer(
             vk::DeviceSize::from(
-                vertex_buffer_size + index_buffer_size
+                (vertex_buffer_size + index_buffer_size) as u32
             ),
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk_mem::MemoryUsage::AutoPreferHost
         );
 
-        //let data = self.allocator.as_ref().unwrap().map_memory(
+        let data = self.allocator.as_ref().unwrap().map_memory(
+            staging.allocation.as_mut().unwrap())
+            .expect("Unable to map memory!");
+
+        data.copy_from(
+            vertices.as_ptr().cast(),
+            vertex_buffer_size
+        );
+
+        data.offset((vertex_buffer_size) as isize)
+            .copy_from(indices.as_ptr().cast(),
+                       index_buffer_size);
+
+        self.immediate_submit(Box::new(|device: &ash::Device,
+                                        cmd: vk::CommandBuffer|{
+            let vertex_copy = vk::BufferCopy::builder()
+                .dst_offset(0)
+                .src_offset(0)
+                .size(vk::DeviceSize::from(vertex_buffer_size as u32))
+                .build();
+
+            let vertex_region = [vertex_copy];
+
+            device.cmd_copy_buffer(cmd, staging.buffer,
+            new_surface.vertex_buffer.buffer, &vertex_region);
+
+            let index_copy = vk::BufferCopy::builder()
+                .dst_offset(0)
+                .src_offset(
+                    vk::DeviceSize::from(vertex_buffer_size as u32)
+                )
+                .size(vk::DeviceSize::from(index_buffer_size as u32))
+                .build();
+
+            let index_region = [index_copy];
+
+            device.cmd_copy_buffer(cmd, staging.buffer,
+                                   new_surface.index_buffer.buffer, &index_region);
+        }));
+
+        self.delete_buffer(&mut staging);
 
         new_surface
     }

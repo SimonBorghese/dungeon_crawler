@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::io::Read;
 use std::default::Default;
 use ash;
@@ -17,7 +18,7 @@ pub unsafe fn load_shader_module(
 
     let mut create_info = vk::ShaderModuleCreateInfo::builder();
     create_info.p_code = file_data.as_ptr().cast();
-    create_info.code_size = (file_data.len());
+    create_info.code_size = file_data.len();
 
     device.create_shader_module(&create_info, None)
 }

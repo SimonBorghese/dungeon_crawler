@@ -1,7 +1,7 @@
+#![allow(dead_code)]
 use ash::vk;
 use ash;
 use vk_mem;
-use sdl2;
 use glm;
 
 #[derive(Default)]
@@ -37,7 +37,6 @@ pub struct GPUMeshBuffers{
     pub vertex_buffer_address: vk::DeviceAddress,
 }
 
-#[derive(Default)]
 pub struct GPUDrawPushConstants{
     pub world_matrix: glm::Mat4,
     pub vertex_buffer: vk::DeviceAddress,
