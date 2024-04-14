@@ -120,6 +120,8 @@ pub struct VulkanEngine{
 
     pub triangle_pipeline: vk::Pipeline,
 
+    pub triangle: vk_types::GPUMeshBuffers,
+
     pub main_deletion_queue: DeletionQueue,
 }
 
@@ -201,6 +203,7 @@ impl VulkanEngine{
             triangle_pipeline_layout: Default::default(),
             main_deletion_queue: Default::default(),
             triangle_pipeline: Default::default(),
+            triangle: Default::default(),
         }
     }
 
@@ -216,6 +219,7 @@ impl VulkanEngine{
             self.init_pipelines();
             self.init_imgui();
             self.init_triangle_pipeline();
+            self.init_default_data();
         }
 
         self.is_initialized = true;
@@ -257,10 +261,10 @@ impl VulkanEngine{
         }
     }
 
-    pub fn immediate_submit(&mut self, func: Box<dyn Fn(
+    pub fn immediate_submit(&mut self, func: &dyn Fn(
         &ash::Device,
         vk::CommandBuffer
-    )>){
+    )){
         unsafe {
             let fences = [self.imm_fence];
             self.get_device().reset_fences(&fences)
@@ -411,6 +415,34 @@ impl VulkanEngine{
         println!("Frame Number: {}", self.frame_number);
     }
 
+    unsafe fn init_default_data(&mut self){
+        let vertices = [vk_types::Vertex{
+            position: glm::Vec3::new(-0.5, -0.5, 0.0),
+            uv_x: 0.0,
+            normal: glm::Vec3::new(0.0, 0.0, 0.0),
+            uv_y: 0.0,
+            color: glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
+        },
+            vk_types::Vertex{
+                position: glm::Vec3::new(0.5, -0.5, 0.0),
+                uv_x: 0.0,
+                normal: glm::Vec3::new(0.0, 0.0, 0.0),
+                uv_y: 0.0,
+                color: glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
+            },
+            vk_types::Vertex{
+                position: glm::Vec3::new(-0.0, 0.5, 0.0),
+                uv_x: 0.0,
+                normal: glm::Vec3::new(0.0, 0.0, 0.0),
+                uv_y: 0.0,
+                color: glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
+            }];
+
+        let indices: Vec<i32> = vec![0,1,2];
+
+        self.triangle = self.upload_mesh(&indices, &vertices);
+    }
+
     pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
          self.get_device().cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE,
          self.gradient_pipeline);
@@ -470,8 +502,21 @@ impl VulkanEngine{
 
         self.get_device().cmd_set_scissor(cmd, 0, &scissors);
 
+        let push_constants= vk_types::GPUDrawPushConstants{
+            world_matrix: glm::Matrix4::new(
+                glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
+                glm::Vec4::new(0.0, 1.0, 0.0, 0.0),
+                glm::Vec4::new(0.0, 0.0, 1.0, 0.0),
+                glm::Vec4::new(0.0, 0.0, 0.0, 1.0),
+            ),
+            vertex_buffer: self.triangle.vertex_buffer_address,
+        };
+
         self.get_device().cmd_push_constants(cmd, self.triangle_pipeline_layout,
-        vk::ShaderStageFlags::VERTEX, 0, &(2.0_f32 * sin(self.frame_number as f32 / 120.0)).to_le_bytes());
+        vk::ShaderStageFlags::VERTEX, 0, std::slice::from_raw_parts(
+                &push_constants as *const _ as *const u8,
+                std::mem::size_of::<vk_types::GPUDrawPushConstants>()
+            ));
 
         self.get_device().cmd_draw(cmd, 3, 1, 0, 0);
 
@@ -533,9 +578,6 @@ impl VulkanEngine{
         self.surface_dev =
             Some(ash::extensions::khr::Surface::new(&self.entry, self.instance.as_ref().unwrap()));
 
-        let shader_objects = vk::PhysicalDeviceShaderObjectFeaturesEXT::builder()
-            .shader_object(true)
-            .build();
 
         let mut vulkan_11_features = ash::vk::PhysicalDeviceVulkan11Features::builder()
             .build();
@@ -553,7 +595,7 @@ impl VulkanEngine{
             .descriptor_indexing(true)
             .build();
 
-        vulkan_11_features.p_next = &shader_objects as *const _ as *mut _;
+        //vulkan_11_features.p_next = &shader_objects as *const _ as *mut _;
         vulkan_12_features.p_next = &vulkan_13_features as *const _ as *mut _;
 
         let mut features = ash::vk::PhysicalDeviceFeatures2::builder()
@@ -934,7 +976,7 @@ impl VulkanEngine{
 
         let push_constant = vk::PushConstantRange::builder()
             .offset(0)
-            .size(std::mem::size_of::<f32>() as u32)
+            .size(std::mem::size_of::<vk_types::GPUDrawPushConstants>() as u32)
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .build();
         let push_constants = [push_constant];
@@ -956,6 +998,7 @@ impl VulkanEngine{
         pipeline_builder.set_multisampling_none();
         pipeline_builder.disable_blending();
         pipeline_builder.disable_depth_test();
+        pipeline_builder.rasterizer.line_width = 1.0;
 
         pipeline_builder.set_color_attachment_format(self.draw_image.image_format);
         pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
@@ -983,7 +1026,10 @@ impl VulkanEngine{
 
         let mut vma_alloc_info = vk_mem::AllocationCreateInfo::default();
         vma_alloc_info.usage = memory_usage;
-        vma_alloc_info.flags = vk_mem::AllocationCreateFlags::MAPPED;
+        vma_alloc_info.flags = vk_mem::AllocationCreateFlags::MAPPED
+            .bitor(
+                vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM
+            );
 
         let mut buffer = vk_types::AllocatedBuffer::default();
 
@@ -1046,7 +1092,7 @@ impl VulkanEngine{
             .copy_from(indices.as_ptr().cast(),
                        index_buffer_size);
 
-        self.immediate_submit(Box::new(|device: &ash::Device,
+        self.immediate_submit((&|device: &ash::Device,
                                         cmd: vk::CommandBuffer|{
             let vertex_copy = vk::BufferCopy::builder()
                 .dst_offset(0)
@@ -1072,6 +1118,10 @@ impl VulkanEngine{
             device.cmd_copy_buffer(cmd, staging.buffer,
                                    new_surface.index_buffer.buffer, &index_region);
         }));
+
+        self.allocator.as_ref().unwrap().unmap_memory(
+            staging.allocation.as_mut().unwrap()
+        );
 
         self.delete_buffer(&mut staging);
 
