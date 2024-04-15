@@ -38,6 +38,6 @@ pub struct GPUMeshBuffers{
 }
 
 pub struct GPUDrawPushConstants{
-    pub world_matrix: glm::Mat4,
+    pub world_matrix: glm::Vector4<f32>,
     pub vertex_buffer: vk::DeviceAddress,
 }

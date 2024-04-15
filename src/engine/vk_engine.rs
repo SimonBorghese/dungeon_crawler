@@ -13,11 +13,13 @@ use super::vk_types;
 use super::vk_descriptor::*;
 use super::vk_pipelines::*;
 use super::vk_image::*;
+use super::vk_loader::*;
 use vk_mem;
 use vk_mem::Alloc;
 use imgui;
 use imgui_rs_vulkan_renderer;
 use imgui_sdl2;
+use num;
 
 const USE_VALIDATION_LAYERS: bool = true;
 
@@ -123,6 +125,8 @@ pub struct VulkanEngine{
     pub triangle: vk_types::GPUMeshBuffers,
 
     pub main_deletion_queue: DeletionQueue,
+
+    pub test_mesh: MeshAsset,
 }
 
 impl VulkanEngine{
@@ -204,6 +208,7 @@ impl VulkanEngine{
             main_deletion_queue: Default::default(),
             triangle_pipeline: Default::default(),
             triangle: Default::default(),
+            test_mesh: Default::default(),
         }
     }
 
@@ -416,6 +421,7 @@ impl VulkanEngine{
     }
 
     unsafe fn init_default_data(&mut self){
+        /*
         let vertices = [vk_types::Vertex{
             position: glm::Vec3::new(-0.5, -0.5, 0.0),
             uv_x: 0.0,
@@ -440,11 +446,14 @@ impl VulkanEngine{
 
         let indices: Vec<i32> = vec![0,1,2];
 
-        self.triangle = self.upload_mesh(&indices, &vertices);
+         */
 
-        MeshAsset::load_gltf_meshes(self, std::path::PathBuf::from(
-            "assets/test.gltf"
-        ));
+        //self.triangle = self.upload_mesh(&indices, &vertices);
+
+        self.test_mesh = MeshAsset::load_first_mesh(self, std::path::PathBuf::from(
+            "assets/test.glb"
+        ))
+            .expect("Unable to load test mesh");
     }
 
     pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
@@ -506,14 +515,23 @@ impl VulkanEngine{
 
         self.get_device().cmd_set_scissor(cmd, 0, &scissors);
 
+        let mut world_matrix: glm::Mat4 = num::one();
+
+        world_matrix.mul_m(&glm::ext::perspective(
+            glm::radians(90.0),
+            self.window_extent.width as f32 / self.window_extent.height as f32,
+            0.1, 1000.0
+        ));
+
+        world_matrix.mul_m(
+            &glm::ext::translate(
+                &num::one(), glm::vec3(50.0 * glm::sin(self.frame_number as f32 / 120.0),  0.0, 0.0)
+            )
+        );
+
         let push_constants= vk_types::GPUDrawPushConstants{
-            world_matrix: glm::Matrix4::new(
-                glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
-                glm::Vec4::new(0.0, 1.0, 0.0, 0.0),
-                glm::Vec4::new(0.0, 0.0, 1.0, 0.0),
-                glm::Vec4::new(0.0, 0.0, 0.0, 1.0),
-            ),
-            vertex_buffer: self.triangle.vertex_buffer_address,
+            world_matrix: world_matrix.as_array().as_ptr().as_array().as_ptr(),
+            vertex_buffer: self.test_mesh.mesh_buffers.vertex_buffer_address,
         };
 
         self.get_device().cmd_push_constants(cmd, self.triangle_pipeline_layout,
@@ -523,12 +541,14 @@ impl VulkanEngine{
             ));
 
         self.get_device().cmd_bind_index_buffer(
-            cmd, self.triangle.index_buffer.buffer,
+            cmd, self.test_mesh.mesh_buffers.index_buffer.buffer,
             vk::DeviceSize::from(0u32), vk::IndexType::UINT32
         );
 
-        self.get_device().cmd_draw_indexed(cmd, 3, 1,
-                                           0, 0, 0);
+        for surface in &self.test_mesh.surfaces {
+            self.get_device().cmd_draw_indexed(cmd, surface.count, 1,
+                                               surface.start_index, 0, 0);
+        }
 
         self.get_device().cmd_end_rendering(cmd);
 
@@ -1027,7 +1047,7 @@ impl VulkanEngine{
 
     }
 
-    unsafe fn create_buffer(&mut self, alloc_size: vk::DeviceSize, usage:
+    pub unsafe fn create_buffer(&mut self, alloc_size: vk::DeviceSize, usage:
     vk::BufferUsageFlags, memory_usage:
     vk_mem::MemoryUsage) -> vk_types::AllocatedBuffer{
         let buffer_info = vk::BufferCreateInfo::builder()
@@ -1053,7 +1073,7 @@ impl VulkanEngine{
         buffer
     }
 
-    unsafe fn upload_mesh(&mut self, indices: &[i32], vertices: &[vk_types::Vertex])
+    pub unsafe fn upload_mesh(&mut self, indices: &[i32], vertices: &[vk_types::Vertex])
     -> vk_types::GPUMeshBuffers{
         let vertex_buffer_size = vertices.len() * std::mem::size_of::<vk_types::Vertex>();
         let index_buffer_size = indices.len() * std::mem::size_of::<i32>();
@@ -1138,7 +1158,7 @@ impl VulkanEngine{
         new_surface
     }
 
-    unsafe fn delete_buffer(&self, buffer: &mut vk_types::AllocatedBuffer){
+    pub unsafe fn delete_buffer(&self, buffer: &mut vk_types::AllocatedBuffer){
         self.allocator.as_ref().unwrap()
             .destroy_buffer(buffer.buffer, buffer.allocation.as_mut().unwrap());
     }
