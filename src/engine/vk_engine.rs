@@ -6,7 +6,7 @@ use ash;
 use ash::vk;
 use ash::vk::{CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
-use glm::sin;
+use super::vk_loader::*;
 use super::vk_initializers::*;
 use super::vk_image;
 use super::vk_types;
@@ -441,6 +441,10 @@ impl VulkanEngine{
         let indices: Vec<i32> = vec![0,1,2];
 
         self.triangle = self.upload_mesh(&indices, &vertices);
+
+        MeshAsset::load_gltf_meshes(self, std::path::PathBuf::from(
+            "assets/test.gltf"
+        ));
     }
 
     pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
@@ -518,7 +522,13 @@ impl VulkanEngine{
                 std::mem::size_of::<vk_types::GPUDrawPushConstants>()
             ));
 
-        self.get_device().cmd_draw(cmd, 3, 1, 0, 0);
+        self.get_device().cmd_bind_index_buffer(
+            cmd, self.triangle.index_buffer.buffer,
+            vk::DeviceSize::from(0u32), vk::IndexType::UINT32
+        );
+
+        self.get_device().cmd_draw_indexed(cmd, 3, 1,
+                                           0, 0, 0);
 
         self.get_device().cmd_end_rendering(cmd);
 

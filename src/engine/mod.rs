@@ -4,3 +4,4 @@ mod vk_initializers;
 mod vk_image;
 mod vk_descriptor;
 mod vk_pipelines;
+mod vk_loader;
