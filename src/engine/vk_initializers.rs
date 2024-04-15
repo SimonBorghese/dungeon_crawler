@@ -116,6 +116,21 @@ pub fn attachment_info(view: vk::ImageView, clear: Option<vk::ClearValue>, layou
         })
 }
 
+pub fn depth_attachment_info(view: vk::ImageView, clear: Option<vk::ClearValue>, layout: vk::ImageLayout)
+                       -> vk::RenderingAttachmentInfoBuilder<'static>{
+    let mut depth_clear = vk::ClearValue::default();
+    unsafe {
+        depth_clear.depth_stencil.depth = 0.0;
+    }
+    vk::RenderingAttachmentInfo::builder()
+        .image_view(view)
+        .image_layout(layout)
+        .load_op(vk::AttachmentLoadOp::LOAD)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(depth_clear)
+}
+
 pub fn pipeline_shader_stage_create_info(shader: vk::ShaderStageFlags, module: vk::ShaderModule)
 -> vk::PipelineShaderStageCreateInfoBuilder<'static>{
     vk::PipelineShaderStageCreateInfo::builder()

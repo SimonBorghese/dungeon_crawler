@@ -94,6 +94,9 @@ pub struct VulkanEngine{
     pub allocator: Option<vk_mem::Allocator>,
 
     pub draw_image: vk_types::AllocatedImage,
+    
+    pub depth_image: vk_types::AllocatedImage,
+    
     pub draw_extent: vk::Extent2D,
 
     pub global_descriptor_allocator: DescriptorAllocator,
@@ -192,6 +195,7 @@ impl VulkanEngine{
             graphics_queue_family: 0,
             allocator: None,
             draw_image: Default::default(),
+            depth_image: Default::default(),
             draw_extent: Default::default(),
             global_descriptor_allocator: DescriptorAllocator::new(),
             draw_image_descriptors: Default::default(),
@@ -223,7 +227,6 @@ impl VulkanEngine{
             self.init_descriptors();
             self.init_pipelines();
             self.init_imgui();
-            self.init_triangle_pipeline();
             self.init_default_data();
         }
 
@@ -343,11 +346,12 @@ impl VulkanEngine{
         cmd, self.draw_image.image,
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
 
-        self.draw_background(cmd);
-
         transition_image(self.get_device(),
                          cmd, self.draw_image.image,
                          vk::ImageLayout::GENERAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        transition_image(self.get_device(),
+                         cmd, self.depth_image.image,
+                         vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
 
         self.draw_geometry(cmd);
 
@@ -421,34 +425,6 @@ impl VulkanEngine{
     }
 
     unsafe fn init_default_data(&mut self){
-        /*
-        let vertices = [vk_types::Vertex{
-            position: glm::Vec3::new(-0.5, -0.5, 0.0),
-            uv_x: 0.0,
-            normal: glm::Vec3::new(0.0, 0.0, 0.0),
-            uv_y: 0.0,
-            color: glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
-        },
-            vk_types::Vertex{
-                position: glm::Vec3::new(0.5, -0.5, 0.0),
-                uv_x: 0.0,
-                normal: glm::Vec3::new(0.0, 0.0, 0.0),
-                uv_y: 0.0,
-                color: glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
-            },
-            vk_types::Vertex{
-                position: glm::Vec3::new(-0.0, 0.5, 0.0),
-                uv_x: 0.0,
-                normal: glm::Vec3::new(0.0, 0.0, 0.0),
-                uv_y: 0.0,
-                color: glm::Vec4::new(1.0, 0.0, 0.0, 0.0),
-            }];
-
-        let indices: Vec<i32> = vec![0,1,2];
-
-         */
-
-        //self.triangle = self.upload_mesh(&indices, &vertices);
 
         self.test_mesh = MeshAsset::load_first_mesh(self, std::path::PathBuf::from(
             "assets/test.glb"
@@ -456,24 +432,13 @@ impl VulkanEngine{
             .expect("Unable to load test mesh");
     }
 
-    pub unsafe fn draw_background(&self, cmd: vk::CommandBuffer){
-         self.get_device().cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE,
-         self.gradient_pipeline);
-
-        let descriptors = [self.draw_image_descriptors];
-        self.get_device().cmd_bind_descriptor_sets(
-            cmd, vk::PipelineBindPoint::COMPUTE, self.gradient_pipeline_layout,
-            0, &descriptors, &[]
-        );
-
-        self.get_device().cmd_dispatch(cmd,
-        self.draw_extent.width  / 16,
-        self.draw_extent.height  / 16, 1);
-    }
-
     pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
         let color_attachment = attachment_info(
             self.draw_image.image_view, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        ).build();
+
+        let depth_attachment = depth_attachment_info(
+            self.depth_image.image_view, None, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
         ).build();
 
         let color_attachments = [color_attachment];
@@ -484,6 +449,7 @@ impl VulkanEngine{
                 .offset(vk::Offset2D::default())
                 .build())
             .color_attachments(&color_attachments)
+            .depth_attachment(&depth_attachment)
             .layer_count(1);
 
         self.get_device().cmd_begin_rendering(cmd, &render_info);
@@ -517,20 +483,35 @@ impl VulkanEngine{
 
         let mut world_matrix: glm::Mat4 = num::one();
 
-        world_matrix.mul_m(&glm::ext::perspective(
-            glm::radians(90.0),
+        world_matrix = world_matrix.mul_m(&glm::ext::perspective(
+            glm::radians(45.0),
             self.window_extent.width as f32 / self.window_extent.height as f32,
             0.1, 1000.0
         ));
 
-        world_matrix.mul_m(
+        world_matrix = world_matrix.mul_m(
             &glm::ext::translate(
-                &num::one(), glm::vec3(50.0 * glm::sin(self.frame_number as f32 / 120.0),  0.0, 0.0)
+                &num::one(), glm::vec3(0.0,  0.0, 5.0 * glm::sin(self.frame_number as f32 / 120.0))
             )
         );
 
+        world_matrix = world_matrix.mul_m(
+            &glm::ext::rotate(
+                &num::one(), glm::radians(180.0),
+                glm::vec3(1.0, 0.0, 0.0)
+            )
+        );
+
+        world_matrix = world_matrix.mul_m(
+            &glm::ext::rotate(
+                &num::one(), glm::radians(360.0) * glm::sin(self.frame_number as f32 / 30.0),
+                glm::vec3(0.0, 1.0, 0.0)
+            )
+        );
+
+
         let push_constants= vk_types::GPUDrawPushConstants{
-            world_matrix: world_matrix.as_array().as_ptr().as_array().as_ptr(),
+            world_matrix: world_matrix,
             vertex_buffer: self.test_mesh.mesh_buffers.vertex_buffer_address,
         };
 
@@ -765,8 +746,30 @@ impl VulkanEngine{
         self.draw_image.image_view = self.get_device().create_image_view(&image_view_info, None)
             .expect("Unable to create image view!");
 
-        //let device = &self.device;
-        //let draw_image = &self.draw_image;
+
+        self.depth_image.image_format = vk::Format::D32_SFLOAT;
+
+        let depth_usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+
+        let dimg_info = image_create_info(
+            self.depth_image.image_format, depth_usage, self.draw_image.image_extent
+        );
+
+        let depth_output = self.allocator.as_ref().unwrap()
+            .create_image(&dimg_info, &rimg_allocinfo)
+            .expect("Unable to create depth image!");
+
+        self.depth_image.image = depth_output.0;
+        self.depth_image.allocation = Some(depth_output.1);
+
+        let dview_info = imageview_create_info(
+            self.depth_image.image_format, self.depth_image.image,
+            vk::ImageAspectFlags::DEPTH
+        );
+
+        self.depth_image.image_view = self.get_device().create_image_view(
+            &dview_info, None
+        ).expect("Unable to create depth image view!");
 
         let delete_func = |device: &VulkanEngine| {
 
@@ -920,55 +923,7 @@ impl VulkanEngine{
     }
 
     unsafe fn init_pipelines(&mut self){
-        self.init_background_pipelines();
-    }
-
-    unsafe fn init_background_pipelines(&mut self){
-        let layouts = [self.draw_image_description_layout];
-        let compute_layout = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(&layouts);
-
-        self.gradient_pipeline_layout = self.get_device().create_pipeline_layout(
-            &compute_layout, None
-        ).expect("Unable to create pipeline layout!");
-
-        let compute_module = load_shader_module(
-            String::from("shaders/gradient_comp.spv"),
-            self.get_device()
-        )
-            .expect("Unable to make compute shader module!");
-
-        let mut stage_info = vk::PipelineShaderStageCreateInfo::builder()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(compute_module);
-
-        stage_info.p_name = "main\0".as_ptr() as _;
-
-        let compute_pipeline_create_info = vk::ComputePipelineCreateInfo::builder()
-            .layout(self.gradient_pipeline_layout)
-            .stage(stage_info.build());
-
-        let pipelines = [compute_pipeline_create_info
-            .build()];
-
-        self.gradient_pipeline =
-            *self.get_device().create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &pipelines, None
-            ).expect("Unable to create pipeline!")
-                .first()
-                .expect("Unable to get the first pipeline!");
-
-        self.get_device().destroy_shader_module(compute_module, None);
-
-        let delete_func = |device: &VulkanEngine| {
-
-            device.get_device().destroy_pipeline_layout(device.gradient_pipeline_layout, None);
-
-            device.get_device().destroy_pipeline(device.gradient_pipeline, None);
-        };
-
-        self.main_deletion_queue.push_function(Box::new(delete_func));
+        self.init_triangle_pipeline();
     }
 
     unsafe fn init_imgui(&mut self){
@@ -1021,17 +976,16 @@ impl VulkanEngine{
 
         let mut pipeline_builder = super::vk_pipelines::PipelineBuilder::new();
         pipeline_builder.pipeline_layout = self.triangle_pipeline_layout;
-        pipeline_builder.set_color_attachment_format(self.draw_image.image_format);
         pipeline_builder.set_shaders(triangle_vert_shader, triangle_frag_shader);
         pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE);
         pipeline_builder.set_multisampling_none();
         pipeline_builder.disable_blending();
-        pipeline_builder.disable_depth_test();
+        pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL);
         pipeline_builder.rasterizer.line_width = 1.0;
 
         pipeline_builder.set_color_attachment_format(self.draw_image.image_format);
-        pipeline_builder.set_depth_format(vk::Format::UNDEFINED);
+        pipeline_builder.set_depth_format(self.depth_image.image_format);
 
         self.triangle_pipeline = pipeline_builder.build_pipeline(self.get_device());
 

@@ -4,7 +4,6 @@ use russimp;
 use russimp::scene::PostProcess;
 use std::default::Default;
 use glm;
-use sdl2::libc::clone;
 
 #[derive(Default, Copy, Clone)]
 pub struct GeoSurface{
