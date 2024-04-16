@@ -21,6 +21,16 @@ pub struct AllocatedBuffer{
     pub info: Option<vk_mem::AllocationInfo>
 }
 
+impl Clone for AllocatedBuffer{
+    fn clone(&self) -> Self {
+        Self{
+            buffer: self.buffer,
+            allocation: self.allocation.clone(),
+            info: self.info.clone()
+        }
+    }
+}
+
 #[repr(C)]
 pub struct Vertex{
     pub position: glm::Vec3,
@@ -30,7 +40,7 @@ pub struct Vertex{
     pub color: glm::Vec4
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct GPUMeshBuffers{
     pub index_buffer: AllocatedBuffer,
     pub vertex_buffer: AllocatedBuffer,

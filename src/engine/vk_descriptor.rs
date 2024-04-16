@@ -47,6 +47,7 @@ pub struct PoolSizeRatio{
     pub desc_type: vk::DescriptorType,
     pub ratio: f32
 }
+#[derive(Clone)]
 pub struct DescriptorAllocator{
     pub pool: vk::DescriptorPool,
 }
@@ -75,12 +76,12 @@ impl DescriptorAllocator{
             .expect("Unable to create descriptor pool");
     }
 
-    pub unsafe fn clear_descriptors(&mut self, device: &ash::Device){
+    pub unsafe fn clear_descriptors(&self, device: &ash::Device){
         device.reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty())
             .expect("Unable to reset descriptor pool!");
     }
 
-    pub unsafe fn destroy_pool(&mut self, device: &ash::Device){
+    pub unsafe fn destroy_pool(&self, device: &ash::Device){
         device.destroy_descriptor_pool(self.pool, None);
     }
 
@@ -95,3 +96,4 @@ impl DescriptorAllocator{
             .expect("Unable to allocate descriptor set!")
     }
 }
+

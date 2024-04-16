@@ -162,6 +162,38 @@ impl PipelineBuilder{
         self.color_blend_attachment.blend_enable = vk::FALSE;
     }
 
+    pub fn enable_blending_additive(&mut self){
+        self.color_blend_attachment.color_write_mask =
+            vk::ColorComponentFlags::R |
+                vk::ColorComponentFlags::G |
+                vk::ColorComponentFlags::B |
+                vk::ColorComponentFlags::A;
+
+        self.color_blend_attachment.blend_enable = vk::TRUE;
+        self.color_blend_attachment.src_color_blend_factor = vk::BlendFactor::ONE;
+        self.color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::DST_ALPHA;
+        self.color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+        self.color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+        self.color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        self.color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+    }
+
+    pub fn enable_blending_alphablend(&mut self){
+        self.color_blend_attachment.color_write_mask =
+            vk::ColorComponentFlags::R |
+                vk::ColorComponentFlags::G |
+                vk::ColorComponentFlags::B |
+                vk::ColorComponentFlags::A;
+
+        self.color_blend_attachment.blend_enable = vk::TRUE;
+        self.color_blend_attachment.src_color_blend_factor = vk::BlendFactor::ONE_MINUS_DST_ALPHA;
+        self.color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::DST_ALPHA;
+        self.color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+        self.color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+        self.color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        self.color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+    }
+
     pub fn set_color_attachment_format(&mut self, format: vk::Format){
         self.color_attachment_format = format;
 

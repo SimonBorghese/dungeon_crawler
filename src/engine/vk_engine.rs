@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+
+use std::collections::VecDeque;
 use std::ops::BitOr;
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
@@ -20,28 +22,100 @@ use imgui;
 use imgui_rs_vulkan_renderer;
 use imgui_sdl2;
 use num;
+use crate::engine::vk_types::AllocatedBuffer;
 
 const USE_VALIDATION_LAYERS: bool = true;
 
 #[derive(Default)]
 pub struct DeletionQueue{
-    pub deletors: std::collections::VecDeque<Box<dyn Fn(&VulkanEngine)>>
+    pub deletors: VecDeque<Box<dyn Fn(&VulkanEngine)>>,
+    pub image_views: VecDeque<vk::ImageView>,
+    pub images: VecDeque<vk::Image>,
+    pub allocations: VecDeque<vk_mem::Allocation>,
+    pub descriptors: VecDeque<DescriptorAllocator>,
+    pub pipeline_layouts: VecDeque<vk::PipelineLayout>,
+    pub pipelines: VecDeque<vk::Pipeline>
 }
 
 impl DeletionQueue{
     pub fn new() -> Self{
         Self{
-            deletors: std::collections::VecDeque::new()
+            deletors: VecDeque::new(),
+            image_views: VecDeque::new(),
+            images: VecDeque::new(),
+            allocations: VecDeque::new(),
+            descriptors: VecDeque::new(),
+            pipeline_layouts: VecDeque::new(),
+            pipelines: VecDeque::new(),
         }
     }
     pub fn push_function(&mut self, func: Box<dyn Fn(&VulkanEngine)>){
         self.deletors.push_front(func);
     }
 
-    pub fn flush(&self, engine: &VulkanEngine){
+    pub fn push_image_view(&mut self, view: vk::ImageView){
+        self.image_views.push_front(view);
+    }
+
+    pub fn push_image(&mut self, view: vk::Image){
+        self.images.push_front(view);
+    }
+
+    pub fn push_alloc(&mut self, alloc: vk_mem::Allocation){
+        self.allocations.push_front(alloc);
+    }
+
+    pub fn push_descriptor(&mut self, descriptor: DescriptorAllocator){
+        self.descriptors.push_front(descriptor);
+    }
+
+    pub fn push_pipeline_layout(&mut self, layout: vk::PipelineLayout){
+        self.pipeline_layouts.push_front(layout);
+    }
+
+    pub fn push_pipeline(&mut self, pipeline: vk::Pipeline){
+        self.pipelines.push_front(pipeline);
+    }
+
+    pub unsafe fn flush(&self, engine: &VulkanEngine){
 
         for func in self.deletors.iter().enumerate(){
             func.1(engine)
+        }
+
+        for view in self.image_views.iter().enumerate(){
+            engine.get_device().destroy_image_view(
+                *view.1, None
+            );
+        }
+
+        for image in self.images.iter().enumerate(){
+            engine.get_device().destroy_image(
+                *image.1, None
+            );
+        }
+
+        for alloc in self.allocations.iter().enumerate(){
+            engine.allocator.as_ref().unwrap().free_memory(
+                alloc.1
+            );
+        }
+
+        for desc in self.descriptors.iter().enumerate(){
+            desc.1.clear_descriptors(engine.get_device());
+            desc.1.destroy_pool(engine.get_device());
+        }
+
+        for layout in self.pipeline_layouts.iter().enumerate(){
+            engine.get_device().destroy_pipeline_layout(
+                *layout.1, None
+            );
+        }
+
+        for pipeline in self.pipelines.iter().enumerate(){
+            engine.get_device().destroy_pipeline(
+                *pipeline.1, None
+            );
         }
     }
 
@@ -73,22 +147,22 @@ pub struct VulkanEngine{
     pub window_extent: vk::Extent2D,
 
     pub instance: Option<ash::Instance>,
-    pub debug_messenger: ash::vk::DebugUtilsMessengerEXT,
-    pub chosen_gpu: ash::vk::PhysicalDevice,
+    pub debug_messenger: vk::DebugUtilsMessengerEXT,
+    pub chosen_gpu: vk::PhysicalDevice,
     pub device: Option<ash::Device>,
-    pub surface: ash::vk::SurfaceKHR,
+    pub surface: vk::SurfaceKHR,
     pub surface_dev: Option<ash::extensions::khr::Surface>,
     pub debug_utils: Option<ash::extensions::ext::DebugUtils>,
     
     pub swapchain: Option<ash_bootstrap::swapchain::Swapchain>,
     pub swapchain_dev: Option<ash::extensions::khr::Swapchain>,
-    pub swapchain_image_format: ash::vk::Format,
-    pub swapchain_images: Vec<ash::vk::Image>,
-    pub swapchain_image_views: Vec<ash::vk::ImageView>,
-    pub swapchain_extent: ash::vk::Extent2D,
+    pub swapchain_image_format: vk::Format,
+    pub swapchain_images: Vec<vk::Image>,
+    pub swapchain_image_views: Vec<vk::ImageView>,
+    pub swapchain_extent: vk::Extent2D,
     
     pub frames: Vec<FrameData>,
-    pub graphics_queue: ash::vk::Queue,
+    pub graphics_queue: vk::Queue,
     pub graphics_queue_family: u32,
 
     pub allocator: Option<vk_mem::Allocator>,
@@ -105,10 +179,6 @@ pub struct VulkanEngine{
 
     pub draw_image_description_layout: vk::DescriptorSetLayout,
 
-    pub gradient_pipeline: vk::Pipeline,
-
-    pub gradient_pipeline_layout: vk::PipelineLayout,
-
     pub imm_fence: vk::Fence,
 
     pub imm_command_buffer: vk::CommandBuffer,
@@ -124,8 +194,6 @@ pub struct VulkanEngine{
     pub triangle_pipeline_layout: vk::PipelineLayout,
 
     pub triangle_pipeline: vk::Pipeline,
-
-    pub triangle: vk_types::GPUMeshBuffers,
 
     pub main_deletion_queue: DeletionQueue,
 
@@ -170,20 +238,20 @@ impl VulkanEngine{
             is_initialized: false,
             frame_number: 0,
             stop_rendering: false,
-            window_extent: ash::vk::Extent2D::builder().width(width).height(height).build(),
+            window_extent: vk::Extent2D::builder().width(width).height(height).build(),
             instance: None,
-            debug_messenger: std::default::Default::default(),
+            debug_messenger: Default::default(),
             debug_utils: None,
             chosen_gpu: std::default::Default::default(),
             device: std::default::Default::default(),
-            surface: std::default::Default::default(),
+            surface: Default::default(),
             surface_dev: None,
             swapchain: None,
             swapchain_dev: None,
-            swapchain_image_format: std::default::Default::default(),
+            swapchain_image_format: Default::default(),
             swapchain_images: vec![],
             swapchain_image_views: vec![],
-            swapchain_extent: std::default::Default::default(),
+            swapchain_extent: Default::default(),
             frames: {
                 let mut frames: Vec<FrameData> = vec![];
                 for _ in 0..FRAME_OVERLAP{
@@ -200,8 +268,6 @@ impl VulkanEngine{
             global_descriptor_allocator: DescriptorAllocator::new(),
             draw_image_descriptors: Default::default(),
             draw_image_description_layout: Default::default(),
-            gradient_pipeline: Default::default(),
-            gradient_pipeline_layout: Default::default(),
             imm_fence: Default::default(),
             imm_command_buffer: Default::default(),
             imm_command_pool: Default::default(),
@@ -211,7 +277,6 @@ impl VulkanEngine{
             triangle_pipeline_layout: Default::default(),
             main_deletion_queue: Default::default(),
             triangle_pipeline: Default::default(),
-            triangle: Default::default(),
             test_mesh: Default::default(),
         }
     }
@@ -342,7 +407,7 @@ impl VulkanEngine{
         self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
             .expect("Unable to begin command buffer!");
 
-        vk_image::transition_image(self.get_device(),
+        transition_image(self.get_device(),
         cmd, self.draw_image.image,
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
 
@@ -355,10 +420,10 @@ impl VulkanEngine{
 
         self.draw_geometry(cmd);
 
-        vk_image::transition_image(self.get_device(),
+        transition_image(self.get_device(),
                                    cmd, self.draw_image.image,
                                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
-        vk_image::transition_image(self.get_device(),
+        transition_image(self.get_device(),
         cmd, self.swapchain_images[swapchain_image.image_index],
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
 
@@ -367,7 +432,7 @@ impl VulkanEngine{
         self.swapchain_images[swapchain_image.image_index],
             self.draw_extent, self.swapchain_extent);
 
-        vk_image::transition_image(self.get_device(),
+        transition_image(self.get_device(),
                                    cmd, self.swapchain_images[swapchain_image.image_index],
                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                    vk::ImageLayout::PRESENT_SRC_KHR);
@@ -399,19 +464,6 @@ impl VulkanEngine{
                                         current_frame.render_fence)
             .expect("Unable to submit queue");
 
-        /*
-        let swapchain = [self.swapchain.as_ref().unwrap().handle()];
-        let render_semaphore = [self.get_current_frame().render_semaphore];
-        let image_index = [swapchain_image.image_index as u32];
-        let present_info = vk::PresentInfoKHR::builder()
-            .swapchains(&swapchain)
-            .wait_semaphores(&render_semaphore)
-            .image_indices(&image_index);
-
-        self.swapchain_dev.as_ref().unwrap().queue_present(self.graphics_queue, &present_info)
-            .expect("Unable to present");
-
-         */
 
         let semaphore = current_frame.render_semaphore;
         self.swapchain.as_mut().unwrap().queue_present(self.graphics_queue,
@@ -511,7 +563,7 @@ impl VulkanEngine{
 
 
         let push_constants= vk_types::GPUDrawPushConstants{
-            world_matrix: world_matrix,
+            world_matrix,
             vertex_buffer: self.test_mesh.mesh_buffers.vertex_buffer_address,
         };
 
@@ -560,7 +612,7 @@ impl VulkanEngine{
         vk::FALSE
     }
     unsafe fn init_vulkan(&mut self) -> Result<(), ash_bootstrap::InstanceCreationError>{
-        let callback: ash::vk::PFN_vkDebugUtilsMessengerCallbackEXT = Some(Self::debug_callback);
+        let callback: vk::PFN_vkDebugUtilsMessengerCallbackEXT = Some(Self::debug_callback);
         let builder = ash_bootstrap::InstanceBuilder::new()
             .app_name("Vulkan Application").unwrap()
             .validation_layers({
@@ -585,23 +637,23 @@ impl VulkanEngine{
                 self.instance.as_ref().unwrap().handle().as_raw() as _)
             .expect("Unable to make Vulkan surface");
 
-        self.surface = ash::vk::SurfaceKHR::from_raw(surface_handle);
+        self.surface = vk::SurfaceKHR::from_raw(surface_handle);
         self.surface_dev =
             Some(ash::extensions::khr::Surface::new(&self.entry, self.instance.as_ref().unwrap()));
 
 
-        let mut vulkan_11_features = ash::vk::PhysicalDeviceVulkan11Features::builder()
+        let vulkan_11_features = vk::PhysicalDeviceVulkan11Features::builder()
             .build();
 
 
         let vulkan_13_features =
-            ash::vk::PhysicalDeviceVulkan13Features::builder()
+            vk::PhysicalDeviceVulkan13Features::builder()
             .dynamic_rendering(true)
             .synchronization2(true)
             .build();
 
         let mut vulkan_12_features =
-            ash::vk::PhysicalDeviceVulkan12Features::builder()
+            vk::PhysicalDeviceVulkan12Features::builder()
             .buffer_device_address(true)
             .descriptor_indexing(true)
             .build();
@@ -609,7 +661,7 @@ impl VulkanEngine{
         //vulkan_11_features.p_next = &shader_objects as *const _ as *mut _;
         vulkan_12_features.p_next = &vulkan_13_features as *const _ as *mut _;
 
-        let mut features = ash::vk::PhysicalDeviceFeatures2::builder()
+        let mut features = vk::PhysicalDeviceFeatures2::builder()
             .build();
         features.p_next = &vulkan_12_features as *const _ as *mut _;
 
@@ -669,21 +721,21 @@ impl VulkanEngine{
     }
 
     unsafe fn create_swapchain(&mut self, width: u32, height: u32){
-        self.swapchain_image_format = ash::vk::Format::B8G8R8A8_UNORM;
-        self.swapchain_extent = ash::vk::Extent2D::builder()
+        self.swapchain_image_format = vk::Format::B8G8R8A8_UNORM;
+        self.swapchain_extent = vk::Extent2D::builder()
             .width(width)
             .height(height)
             .build();
 
         let swapchain_builder = ash_bootstrap::SwapchainOptions::new()
-            .format_preference(&[ash::vk::SurfaceFormatKHR::builder()
+            .format_preference(&[vk::SurfaceFormatKHR::builder()
                                    .format(self.swapchain_image_format)
-                                   .color_space(ash::vk::ColorSpaceKHR::SRGB_NONLINEAR)
+                                   .color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
                                     .build()])
             .frames_in_flight(3)
-            .present_mode_preference(&[ash::vk::PresentModeKHR::FIFO])
-            .usage(ash::vk::ImageUsageFlags::COLOR_ATTACHMENT
-             | ash::vk::ImageUsageFlags::TRANSFER_DST);
+            .present_mode_preference(&[vk::PresentModeKHR::FIFO])
+            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT
+             | vk::ImageUsageFlags::TRANSFER_DST);
 
         let mut swapchain_builder2 =
             ash_bootstrap::Swapchain::new(swapchain_builder.clone(), self.surface, self.chosen_gpu,
@@ -771,22 +823,18 @@ impl VulkanEngine{
             &dview_info, None
         ).expect("Unable to create depth image view!");
 
-        let delete_func = |device: &VulkanEngine| {
+        self.main_deletion_queue.push_image_view(self.depth_image.image_view);
+        self.main_deletion_queue.push_image(self.depth_image.image);
+        self.main_deletion_queue.push_alloc(self.depth_image.allocation.unwrap());
+        self.main_deletion_queue.push_image_view(self.draw_image.image_view);
+        self.main_deletion_queue.push_image(self.draw_image.image);
+        self.main_deletion_queue.push_alloc(self.draw_image.allocation.unwrap());
 
-            device.allocator.as_ref().unwrap().free_memory(
-                device.draw_image.allocation.as_ref().unwrap()
-            );
-            device.get_device().destroy_image_view(device.draw_image.image_view, None);
-            device.get_device().destroy_image(device.draw_image.image, None);
-            println!("tried to delete :(");
-        };
-
-        self.main_deletion_queue.push_function(Box::new(delete_func));
 
     }
 
-    unsafe fn create_image_views(&self, images: &Vec<ash::vk::Image>)
-        -> Vec<ash::vk::ImageView>{
+    unsafe fn create_image_views(&self, images: &Vec<vk::Image>)
+        -> Vec<vk::ImageView>{
         let components = vk::ComponentMapping::builder()
             .r(vk::ComponentSwizzle::IDENTITY)
             .g(vk::ComponentSwizzle::IDENTITY)
@@ -802,7 +850,7 @@ impl VulkanEngine{
             .layer_count(1)
             .build();
 
-        let mut image_views: Vec<ash::vk::ImageView> = vec![];
+        let mut image_views: Vec<vk::ImageView> = vec![];
         for image in images{
             let info = vk::ImageViewCreateInfo::builder()
                 .image(*image)
@@ -920,6 +968,8 @@ impl VulkanEngine{
         let descriptor_writes = [draw_image_write];
         self.get_device().update_descriptor_sets(&descriptor_writes,
         &[]);
+
+        self.main_deletion_queue.push_descriptor(self.global_descriptor_allocator.clone());
     }
 
     unsafe fn init_pipelines(&mut self){
@@ -974,13 +1024,13 @@ impl VulkanEngine{
         )
             .expect("Unable to create triangle pipeline layout!");
 
-        let mut pipeline_builder = super::vk_pipelines::PipelineBuilder::new();
+        let mut pipeline_builder = PipelineBuilder::new();
         pipeline_builder.pipeline_layout = self.triangle_pipeline_layout;
         pipeline_builder.set_shaders(triangle_vert_shader, triangle_frag_shader);
         pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE);
         pipeline_builder.set_multisampling_none();
-        pipeline_builder.disable_blending();
+        pipeline_builder.enable_blending_additive();
         pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL);
         pipeline_builder.rasterizer.line_width = 1.0;
 
@@ -989,21 +1039,14 @@ impl VulkanEngine{
 
         self.triangle_pipeline = pipeline_builder.build_pipeline(self.get_device());
 
-        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
-            device.get_device().destroy_pipeline_layout(
-                device.triangle_pipeline_layout, None
-            );
-
-            device.get_device().destroy_pipeline(
-                device.triangle_pipeline, None
-            );
-        }))
+        self.main_deletion_queue.push_pipeline(self.triangle_pipeline);
+        self.main_deletion_queue.push_pipeline_layout(self.triangle_pipeline_layout);
 
     }
 
     pub unsafe fn create_buffer(&mut self, alloc_size: vk::DeviceSize, usage:
     vk::BufferUsageFlags, memory_usage:
-    vk_mem::MemoryUsage) -> vk_types::AllocatedBuffer{
+    vk_mem::MemoryUsage) -> AllocatedBuffer{
         let buffer_info = vk::BufferCreateInfo::builder()
             .size(alloc_size)
             .usage(usage);
@@ -1015,7 +1058,7 @@ impl VulkanEngine{
                 vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM
             );
 
-        let mut buffer = vk_types::AllocatedBuffer::default();
+        let mut buffer = AllocatedBuffer::default();
 
         let alloc = self.allocator.as_ref().unwrap()
             .create_buffer(&buffer_info,&vma_alloc_info)
@@ -1072,12 +1115,12 @@ impl VulkanEngine{
             vertex_buffer_size
         );
 
-        data.offset((vertex_buffer_size) as isize)
+        data.offset(vertex_buffer_size as isize)
             .copy_from(indices.as_ptr().cast(),
                        index_buffer_size);
 
-        self.immediate_submit((&|device: &ash::Device,
-                                        cmd: vk::CommandBuffer|{
+        self.immediate_submit(&|device: &ash::Device,
+                                cmd: vk::CommandBuffer|{
             let vertex_copy = vk::BufferCopy::builder()
                 .dst_offset(0)
                 .src_offset(0)
@@ -1101,7 +1144,7 @@ impl VulkanEngine{
 
             device.cmd_copy_buffer(cmd, staging.buffer,
                                    new_surface.index_buffer.buffer, &index_region);
-        }));
+        });
 
         self.allocator.as_ref().unwrap().unmap_memory(
             staging.allocation.as_mut().unwrap()
@@ -1112,9 +1155,14 @@ impl VulkanEngine{
         new_surface
     }
 
-    pub unsafe fn delete_buffer(&self, buffer: &mut vk_types::AllocatedBuffer){
+    pub unsafe fn delete_buffer(&self, buffer: &mut AllocatedBuffer){
         self.allocator.as_ref().unwrap()
             .destroy_buffer(buffer.buffer, buffer.allocation.as_mut().unwrap());
+    }
+
+    pub unsafe fn delete_allocation(&self, buffer: vk::Buffer, allocation: &vk_mem::Allocation){
+        self.get_device().destroy_buffer(buffer, None);
+        self.allocator.as_ref().unwrap().free_memory(allocation);
     }
 
     pub unsafe fn cleanup(&mut self){
@@ -1123,6 +1171,8 @@ impl VulkanEngine{
                 .expect("Unable to wait idle");
 
             self.main_deletion_queue.flush(self);
+
+            MeshAsset::delete_mesh(&mut self.test_mesh.clone(), self);
 
             for i in 0..FRAME_OVERLAP{
                 self.get_device().destroy_command_pool(self.frames[i].command_pool, None);

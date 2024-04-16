@@ -4,6 +4,7 @@ use russimp;
 use russimp::scene::PostProcess;
 use std::default::Default;
 use glm;
+use crate::engine::vk_engine::VulkanEngine;
 
 #[derive(Default, Copy, Clone)]
 pub struct GeoSurface{
@@ -11,7 +12,7 @@ pub struct GeoSurface{
     pub count: u32
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MeshAsset{
     pub name: String,
 
@@ -54,18 +55,19 @@ impl MeshAsset{
                 let vertex = mesh.vertices[v];
                 let normal = mesh.normals[v];
 
-                let coords = mesh.texture_coords[v].as_ref().unwrap();
+                let coords = mesh.texture_coords[0].as_ref().unwrap();
+                let uv = coords.get(v).expect("Unable to get UV coords!");
 
                 vertices.push(
                     vk_types::Vertex{
                         position: glm::vec3(
                             vertex.x, vertex.y, vertex.z
                         ),
-                        uv_x: 0.0,
+                        uv_x: uv.x,
                         normal: glm::vec3(
                             normal.x, normal.y, normal.z
                         ),
-                        uv_y: 0.0,
+                        uv_y: uv.y,
                         color: glm::vec4(
                             vertex.x, vertex.y, vertex.z, 1.0
                         ),
@@ -129,26 +131,19 @@ impl MeshAsset{
             for v in 0..mesh.vertices.len(){
                 let vertex = mesh.vertices[v];
                 let normal = mesh.normals[v];
-                /*
-                let uvs = mesh.texture_coords.get(0)
-                    .expect("Unable to load texture coords!")
-                    .clone()
-                    .expect("Unable to get texture coords!")
-                    .get(v)
-                    .expect("Unable to get vertex UVs!");
-
-                 */
+                let coords = mesh.texture_coords[0].as_ref().unwrap();
+                let uv = coords.get(v).expect("Unable to get UV coords!");
 
                 vertices.push(
                     vk_types::Vertex{
                         position: glm::vec3(
                             vertex.x, vertex.y, vertex.z
                         ),
-                        uv_x: 0.0,
+                        uv_x: uv.x,
                         normal: glm::vec3(
                             normal.x, normal.y, normal.z
                         ),
-                        uv_y: 0.0,
+                        uv_y: uv.y,
                         color: glm::vec4(
                             vertex.x, vertex.y, vertex.z, 1.0
                         ),
@@ -178,5 +173,10 @@ impl MeshAsset{
         }
 
         Some(mesh_out)
+    }
+
+    pub unsafe fn delete_mesh(mesh: &mut MeshAsset, device: &VulkanEngine){
+        device.delete_buffer(&mut mesh.mesh_buffers.index_buffer);
+        device.delete_buffer(&mut mesh.mesh_buffers.vertex_buffer);
     }
 }
