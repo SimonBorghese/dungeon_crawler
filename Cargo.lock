@@ -331,6 +331,7 @@ dependencies = [
  "imgui",
  "imgui-rs-vulkan-renderer",
  "imgui-sdl2",
+ "log 0.4.21",
  "num 0.4.2",
  "russimp",
  "sdl2",
