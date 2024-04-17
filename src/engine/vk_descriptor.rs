@@ -46,6 +46,7 @@ impl DescriptorLayoutBuilder{
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct PoolSizeRatio{
     pub desc_type: vk::DescriptorType,
     pub ratio: f32
@@ -100,12 +101,14 @@ impl DescriptorAllocator{
     }
 }
 
+#[derive(Default, Clone)]
 pub struct DescriptorAllocatorGrowable{
     ratios: Vec<PoolSizeRatio>,
     full_pools: Vec<vk::DescriptorPool>,
     ready_pools: Vec<vk::DescriptorPool>,
     sets_per_pool: u32,
 }
+
 
 impl DescriptorAllocatorGrowable{
 
@@ -120,42 +123,42 @@ impl DescriptorAllocatorGrowable{
     pub unsafe fn init(&mut self, device: &ash::Device, initial_sets: u32, pool_ratios: Vec<PoolSizeRatio>){
         self.ratios.clear();
 
-        for r in pool_ratios{
-            self.ratios.push(r);
+        for r in &pool_ratios{
+            self.ratios.push(*r);
         }
 
         let new_pool = self.create_pool(device, initial_sets, &pool_ratios);
 
-        self.sets_per_pool = initial_sets * 1.5;
+        self.sets_per_pool = (initial_sets as f32 * 1.5) as u32;
 
         self.ready_pools.push(new_pool);
     }
 
     pub unsafe fn clear_pools(&mut self, device: &ash::Device){
-        for p in self.ready_pools{
-            device.reset_descriptor_pool(p, vk::DescriptorPoolResetFlags::empty())
+        for p in &self.ready_pools{
+            device.reset_descriptor_pool(*p, vk::DescriptorPoolResetFlags::empty())
                 .expect("Unable to reset descriptor pools!");
         }
 
-        for p in self.full_pools{
-            device.reset_descriptor_pool(p, vk::DescriptorPoolResetFlags::empty())
+        for p in &self.full_pools{
+            device.reset_descriptor_pool(*p, vk::DescriptorPoolResetFlags::empty())
                 .expect("Unable to reset descriptor pools!");
-            self.ready_pools.push(p);
+            self.ready_pools.push(*p);
         }
 
         self.full_pools.clear();
     }
 
     pub unsafe fn destroy_pools(&mut self, device: &ash::Device){
-        for p in self.ready_pools{
+        for p in &self.ready_pools{
             device.destroy_descriptor_pool(
-                p, None
+                *p, None
             );
         }
         self.ready_pools.clear();
 
-        for p in self.full_pools{
-            device.destroy_descriptor_pool(p, None);
+        for p in &self.full_pools{
+            device.destroy_descriptor_pool(*p, None);
         }
 
         self.full_pools.clear();
@@ -167,7 +170,7 @@ impl DescriptorAllocatorGrowable{
 
         let layouts = [layout];
 
-        let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+        let mut alloc_info = vk::DescriptorSetAllocateInfo::builder()
             .descriptor_pool(pool_to_use)
             .set_layouts(&layouts);
 
@@ -206,9 +209,9 @@ impl DescriptorAllocatorGrowable{
                 .expect("Unable to get last descriptor pool!");
             self.ready_pools.pop();
         } else{
-            new_pool = self.create_pool(device, self.sets_per_pool, &self.ratios);
+            new_pool = self.create_pool(device, self.sets_per_pool, &self.ratios.clone());
 
-            self.sets_per_pool = self.sets_per_pool * 1.5;
+            self.sets_per_pool = (self.sets_per_pool as f32 * 1.5) as u32;
 
             if self.sets_per_pool > 4092{
                 self.sets_per_pool = 4092;          }
@@ -220,7 +223,7 @@ impl DescriptorAllocatorGrowable{
     fn create_pool(&mut self, device: &ash::Device, set_count: u32, pool_ratios: &Vec<PoolSizeRatio>)
     -> vk::DescriptorPool{
         let mut pool_sizes: Vec<vk::DescriptorPoolSize> = vec![];
-        for ratio in &pool_ratios{
+        for ratio in pool_ratios{
             pool_sizes.push(vk::DescriptorPoolSize::builder()
                 .ty(ratio.desc_type)
                 .descriptor_count((ratio.ratio * (set_count as f32)) as u32)
@@ -302,7 +305,14 @@ impl DescriptorWriter{
         self.buffer_infos.clear();
     }
 
-    pub fn update_set(&mut self, device: &ash::Device, set: vk::DescriptorSet){
+    pub unsafe fn update_set(&mut self, device: &ash::Device, set: vk::DescriptorSet){
+        for write in &mut self.writes{
+            write.dst_set = set;
+        }
+
+        device.update_descriptor_sets(
+            self.writes.as_slice(), &[]
+        );
 
     }
 }

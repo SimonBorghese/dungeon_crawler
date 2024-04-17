@@ -6,7 +6,7 @@ use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
 use ash::vk;
-use ash::vk::{CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
+use ash::vk::{BufferUsageFlags, CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
 use super::vk_loader::*;
 use super::vk_initializers::*;
@@ -33,8 +33,10 @@ pub struct DeletionQueue{
     pub images: VecDeque<vk::Image>,
     pub allocations: VecDeque<vk_mem::Allocation>,
     pub descriptors: VecDeque<DescriptorAllocator>,
+    pub descriptor_growable: VecDeque<DescriptorAllocatorGrowable>,
     pub pipeline_layouts: VecDeque<vk::PipelineLayout>,
-    pub pipelines: VecDeque<vk::Pipeline>
+    pub pipelines: VecDeque<vk::Pipeline>,
+    pub buffers: VecDeque<AllocatedBuffer>,
 }
 
 impl DeletionQueue{
@@ -45,8 +47,10 @@ impl DeletionQueue{
             images: VecDeque::new(),
             allocations: VecDeque::new(),
             descriptors: VecDeque::new(),
+            descriptor_growable: VecDeque::new(),
             pipeline_layouts: VecDeque::new(),
             pipelines: VecDeque::new(),
+            buffers: VecDeque::new()
         }
     }
     pub fn push_function(&mut self, func: Box<dyn Fn(&VulkanEngine)>){
@@ -69,6 +73,10 @@ impl DeletionQueue{
         self.descriptors.push_front(descriptor);
     }
 
+    pub fn push_descriptor_growable(&mut self, descriptor: DescriptorAllocatorGrowable){
+        self.descriptor_growable.push_front(descriptor);
+    }
+
     pub fn push_pipeline_layout(&mut self, layout: vk::PipelineLayout){
         self.pipeline_layouts.push_front(layout);
     }
@@ -77,6 +85,16 @@ impl DeletionQueue{
         self.pipelines.push_front(pipeline);
     }
 
+    pub fn push_buffer(&mut self, buffer: AllocatedBuffer){
+        self.buffers.push_front(buffer);
+    }
+
+    pub unsafe fn prepare_flush(&mut self, device: ash::Device){
+        for desc in self.descriptor_growable.iter_mut().enumerate(){
+            desc.1.clear_pools(&device);
+            desc.1.destroy_pools(&device);
+        }
+    }
     pub unsafe fn flush(&self, engine: &VulkanEngine){
 
         for func in self.deletors.iter().enumerate(){
@@ -93,6 +111,10 @@ impl DeletionQueue{
             engine.get_device().destroy_image(
                 *image.1, None
             );
+        }
+
+        for buf in self.buffers.iter().enumerate(){
+            engine.delete_buffer(buf.1);
         }
 
         for alloc in self.allocations.iter().enumerate(){
@@ -124,13 +146,37 @@ impl DeletionQueue{
     }
 }
 
+#[derive(Clone)]
+pub struct GPUSceneData{
+    pub view: glm::Mat4,
+    pub proj: glm::Mat4,
+    pub view_proj: glm::Mat4,
+    pub ambient_color: glm::Vec4,
+    pub sunlight_direction: glm::Vec4,
+    pub sunlight_color: glm::Vec4
+}
+
+impl GPUSceneData{
+    pub fn new() -> Self {
+        Self{
+            view: num::one(),
+            proj: num::one(),
+            view_proj: num::one(),
+            ambient_color: num::one(),
+            sunlight_direction: num::one(),
+            sunlight_color: num::one(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct FrameData {
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
     render_semaphore: vk::Semaphore,
     render_fence: vk::Fence,
-    deletion_queue: DeletionQueue,
+    deletion_queue: Box<DeletionQueue>,
+    frame_descriptors: DescriptorAllocatorGrowable
 }
 
 const FRAME_OVERLAP: usize = 2;
@@ -198,6 +244,10 @@ pub struct VulkanEngine{
     pub main_deletion_queue: DeletionQueue,
 
     pub test_mesh: MeshAsset,
+
+    pub scene_data: GPUSceneData,
+
+    pub gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout
 }
 
 impl VulkanEngine{
@@ -278,6 +328,8 @@ impl VulkanEngine{
             main_deletion_queue: Default::default(),
             triangle_pipeline: Default::default(),
             test_mesh: Default::default(),
+            scene_data: GPUSceneData::new(),
+            gpu_scene_data_descriptor_layout: Default::default(),
         }
     }
 
@@ -377,14 +429,29 @@ impl VulkanEngine{
     }
 
     unsafe fn draw(&mut self){
-        let current_frame = &self.frames[self.get_current_frame()];
-        self.get_device().wait_for_fences(&[current_frame.render_fence],
+        let current_frame = self.get_current_frame().clone();
+        let device = self.get_device().clone();
+
+        let mut gpu_scene_data_buffer = self.create_buffer(
+            vk::DeviceSize::from(
+                std::mem::size_of::<GPUSceneData>() as u32
+            ), BufferUsageFlags::UNIFORM_BUFFER, vk_mem::MemoryUsage::AutoPreferHost
+        );
+
+        self.frames[current_frame].deletion_queue.push_buffer(gpu_scene_data_buffer.clone());
+
+        self.frames[current_frame].frame_descriptors.clear_pools(
+            &self.device.clone().unwrap().clone()
+        );
+
+        self.frames[current_frame].deletion_queue.flush(self);
+
+        self.get_device().wait_for_fences(&[self.frames[current_frame].render_fence],
                                           true, 1000000000)
             .expect("Unable to wait for fence");
 
-        current_frame.deletion_queue.flush(self);
 
-        self.get_device().reset_fences(&[current_frame.render_fence])
+        self.get_device().reset_fences(&[self.frames[current_frame].render_fence])
             .expect("Unable to reset fence!");
 
         let swapchain_image = self.swapchain.as_mut().unwrap()
@@ -392,7 +459,7 @@ impl VulkanEngine{
                      1000000000, false)
             .expect("Unable to acquire swapchain image");
 
-        let cmd = current_frame.command_buffer;
+        let cmd = self.frames[current_frame].command_buffer.clone();
 
         self.get_device().reset_command_buffer(cmd, Default::default())
             .expect("Unable to reset command buffer!");
@@ -417,6 +484,22 @@ impl VulkanEngine{
         transition_image(self.get_device(),
                          cmd, self.depth_image.image,
                          vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
+
+        let mut scene_uniforms = self.allocator.as_ref().unwrap().map_memory(
+            gpu_scene_data_buffer.allocation.as_mut().unwrap()
+        );
+
+        scene_uniforms.as_mut().unwrap().copy_from(&self.scene_data as *const _ as *const u8,
+        std::mem::size_of::<GPUSceneData>());
+
+        self.allocator.as_ref().unwrap().unmap_memory(
+            gpu_scene_data_buffer.allocation.as_mut().unwrap()
+        );
+
+        let global_buffer = self.frames[current_frame].frame_descriptors.allocate(
+            &device, self.gpu_scene_data_descriptor_layout
+        );
+
 
         self.draw_geometry(cmd);
 
@@ -452,7 +535,7 @@ impl VulkanEngine{
 
         let signal_info = semaphore_submit_info(
             vk::PipelineStageFlags2::ALL_GRAPHICS,
-            current_frame.render_semaphore
+            self.frames[current_frame].render_semaphore
         ).build();
 
         let submit = submit_info(&[cmd_info],
@@ -461,11 +544,11 @@ impl VulkanEngine{
             .build();
 
         self.get_device().queue_submit2(self.graphics_queue, &[submit],
-                                        current_frame.render_fence)
+                                        self.frames[current_frame].render_fence)
             .expect("Unable to submit queue");
 
 
-        let semaphore = current_frame.render_semaphore;
+        let semaphore = self.frames[current_frame].render_semaphore;
         self.swapchain.as_mut().unwrap().queue_present(self.graphics_queue,
                                                        semaphore, swapchain_image.image_index)
             .expect("Unable to present image!");
@@ -577,6 +660,7 @@ impl VulkanEngine{
             cmd, self.test_mesh.mesh_buffers.index_buffer.buffer,
             vk::DeviceSize::from(0u32), vk::IndexType::UINT32
         );
+
 
         for surface in &self.test_mesh.surfaces {
             self.get_device().cmd_draw_indexed(cmd, surface.count, 1,
@@ -946,6 +1030,13 @@ impl VulkanEngine{
         self.draw_image_description_layout = builder.build(self.get_device(),
                                                            vk::ShaderStageFlags::COMPUTE);
 
+        let mut builder = DescriptorLayoutBuilder::new();
+        builder.add_binding(0, vk::DescriptorType::UNIFORM_BUFFER);
+        self.gpu_scene_data_descriptor_layout = builder.build(
+            self.get_device(), vk::ShaderStageFlags::VERTEX |
+                vk::ShaderStageFlags::FRAGMENT
+        );
+
         self.draw_image_descriptors = *self.global_descriptor_allocator
             .allocate(self.device.as_ref().unwrap(), self.draw_image_description_layout)
             .first()
@@ -970,6 +1061,37 @@ impl VulkanEngine{
         &[]);
 
         self.main_deletion_queue.push_descriptor(self.global_descriptor_allocator.clone());
+
+        for i in 0..FRAME_OVERLAP{
+            let frame_sizes: Vec<PoolSizeRatio> = vec![
+                PoolSizeRatio{
+                    desc_type: vk::DescriptorType::STORAGE_IMAGE,
+                    ratio: 3.0,
+                },
+                PoolSizeRatio{
+                    desc_type: vk::DescriptorType::STORAGE_BUFFER,
+                    ratio: 3.0,
+                },
+                PoolSizeRatio{
+                    desc_type: vk::DescriptorType::UNIFORM_BUFFER,
+                    ratio: 3.0,
+                },
+                PoolSizeRatio{
+                    desc_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ratio: 4.0,
+                }
+            ];
+
+            self.frames.get_mut(i)
+                .expect("Unable to get frame data!")
+                .frame_descriptors = DescriptorAllocatorGrowable::new();
+            self.frames.get_mut(i).unwrap()
+                .frame_descriptors.init(self.device.clone().as_ref().unwrap(), 1000, frame_sizes);
+
+            self.main_deletion_queue.descriptor_growable.push_front(
+                self.frames.get(i).clone().unwrap().frame_descriptors.clone()
+            )
+        }
     }
 
     unsafe fn init_pipelines(&mut self){
@@ -1044,7 +1166,7 @@ impl VulkanEngine{
 
     }
 
-    pub unsafe fn create_buffer(&mut self, alloc_size: vk::DeviceSize, usage:
+    pub unsafe fn create_buffer(&self, alloc_size: vk::DeviceSize, usage:
     vk::BufferUsageFlags, memory_usage:
     vk_mem::MemoryUsage) -> AllocatedBuffer{
         let buffer_info = vk::BufferCreateInfo::builder()
@@ -1155,9 +1277,11 @@ impl VulkanEngine{
         new_surface
     }
 
-    pub unsafe fn delete_buffer(&self, buffer: &mut AllocatedBuffer){
-        self.allocator.as_ref().unwrap()
-            .destroy_buffer(buffer.buffer, buffer.allocation.as_mut().unwrap());
+    pub unsafe fn delete_buffer(&self, buffer: &AllocatedBuffer){
+        self.get_device().destroy_buffer(buffer.buffer, None);
+        self.allocator.as_ref().unwrap().free_memory(
+            buffer.allocation.as_ref().unwrap()
+        );
     }
 
     pub unsafe fn delete_allocation(&self, buffer: vk::Buffer, allocation: &vk_mem::Allocation){
@@ -1170,6 +1294,7 @@ impl VulkanEngine{
             self.get_device().device_wait_idle()
                 .expect("Unable to wait idle");
 
+            self.main_deletion_queue.prepare_flush(self.get_device().clone());
             self.main_deletion_queue.flush(self);
 
             MeshAsset::delete_mesh(&mut self.test_mesh.clone(), self);
