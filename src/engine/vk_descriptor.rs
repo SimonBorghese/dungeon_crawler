@@ -242,8 +242,8 @@ impl DescriptorAllocatorGrowable{
 }
 
 pub struct DescriptorWriter{
-    image_infos: VecDeque<vk::DescriptorImageInfo>,
-    buffer_infos: VecDeque<vk::DescriptorBufferInfo>,
+    image_infos: Vec<vk::DescriptorImageInfo>,
+    buffer_infos: Vec<vk::DescriptorBufferInfo>,
     writes: Vec<vk::WriteDescriptorSet>
 }
 
@@ -261,42 +261,36 @@ impl DescriptorWriter{
         let info = vk::DescriptorImageInfo::builder()
             .sampler(sampler)
             .image_view(image)
-            .image_layout(layout)
-            .build();
+            .image_layout(layout);
 
-        self.image_infos.push_back(info);
-
-        let infos = [info];
+        self.image_infos.push(info.clone());
 
         let write = vk::WriteDescriptorSet::builder()
             .dst_binding(binding as u32)
             .dst_set(vk::DescriptorSet::null())
             .descriptor_type(desc_type)
-            .image_info(&infos)
-            .build();
+            .image_info(self.image_infos.as_slice());
 
-        self.writes.push(write);
+        self.writes.push(write.clone());
     }
 
     pub fn write_buffer(&mut self, binding: i32, buffer: vk::Buffer,
-                        size: u32, offset: u32, desc_type: vk::DescriptorType){
+                        size: u64, offset: u64, desc_type: vk::DescriptorType){
         let info = vk::DescriptorBufferInfo::builder()
             .buffer(buffer)
-            .offset(vk::DeviceSize::from(offset))
-            .range(vk::DeviceSize::from(size))
-            .build();
-        self.buffer_infos.push_back(info);
+            .offset(offset)
+            .range(size);
+        self.buffer_infos.push(info.clone());
 
-        let infos = [info];
+        let infos = [info.clone()];
 
         let write = vk::WriteDescriptorSet::builder()
             .dst_binding(binding as u32)
             .dst_set(vk::DescriptorSet::null())
             .descriptor_type(desc_type)
-            .buffer_info(&infos)
-            .build();
+            .buffer_info(self.buffer_infos.as_slice());
 
-        self.writes.push(write);
+        self.writes.push(write.clone());
     }
 
     pub fn clear(&mut self){
@@ -306,12 +300,14 @@ impl DescriptorWriter{
     }
 
     pub unsafe fn update_set(&mut self, device: &ash::Device, set: vk::DescriptorSet){
+        let mut writes: Vec<vk::WriteDescriptorSet> = vec![];
         for write in &mut self.writes{
             write.dst_set = set;
+            writes.push(write.clone());
         }
 
         device.update_descriptor_sets(
-            self.writes.as_slice(), &[]
+            writes.as_slice(), &[]
         );
 
     }

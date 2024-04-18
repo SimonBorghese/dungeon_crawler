@@ -139,10 +139,19 @@ impl DeletionQueue{
                 *pipeline.1, None
             );
         }
+
     }
 
     pub fn clear(&mut self){
         self.deletors.clear();
+        self.buffers.clear();
+        self.image_views.clear();
+        self.allocations.clear();
+        self.images.clear();
+        self.descriptor_growable.clear();
+        self.descriptors.clear();
+        self.pipeline_layouts.clear();
+        self.pipelines.clear();
     }
 }
 
@@ -430,6 +439,21 @@ impl VulkanEngine{
 
     unsafe fn draw(&mut self){
         let current_frame = self.get_current_frame().clone();
+
+        self.frames[current_frame].frame_descriptors.clear_pools(
+            &self.device.clone().unwrap().clone()
+        );
+
+        self.frames[current_frame].deletion_queue.flush(self);
+        self.frames[current_frame].deletion_queue.clear();
+
+        self.scene_data.proj = glm::ext::perspective(
+            45.0, 800.0 / 600.0, 0.1, 1000.0
+        );
+
+        self.scene_data.view = num::one();
+
+
         let device = self.get_device().clone();
 
         let mut gpu_scene_data_buffer = self.create_buffer(
@@ -439,12 +463,6 @@ impl VulkanEngine{
         );
 
         self.frames[current_frame].deletion_queue.push_buffer(gpu_scene_data_buffer.clone());
-
-        self.frames[current_frame].frame_descriptors.clear_pools(
-            &self.device.clone().unwrap().clone()
-        );
-
-        self.frames[current_frame].deletion_queue.flush(self);
 
         self.get_device().wait_for_fences(&[self.frames[current_frame].render_fence],
                                           true, 1000000000)
@@ -485,6 +503,7 @@ impl VulkanEngine{
                          cmd, self.depth_image.image,
                          vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
 
+
         let mut scene_uniforms = self.allocator.as_ref().unwrap().map_memory(
             gpu_scene_data_buffer.allocation.as_mut().unwrap()
         );
@@ -499,6 +518,12 @@ impl VulkanEngine{
         let global_buffer = self.frames[current_frame].frame_descriptors.allocate(
             &device, self.gpu_scene_data_descriptor_layout
         );
+
+        let mut writer = DescriptorWriter::new();
+        writer.clear();
+        writer.write_buffer(0, gpu_scene_data_buffer.buffer,
+        std::mem::size_of::<GPUSceneData>() as u64, 0u64, vk::DescriptorType::UNIFORM_BUFFER);
+        writer.update_set(&device, global_buffer);
 
 
         self.draw_geometry(cmd);
@@ -618,32 +643,9 @@ impl VulkanEngine{
 
         let mut world_matrix: glm::Mat4 = num::one();
 
-        world_matrix = world_matrix.mul_m(&glm::ext::perspective(
-            glm::radians(45.0),
-            self.window_extent.width as f32 / self.window_extent.height as f32,
-            0.1, 1000.0
-        ));
-
-        world_matrix = world_matrix.mul_m(
-            &glm::ext::translate(
-                &num::one(), glm::vec3(0.0,  0.0, 5.0 * glm::sin(self.frame_number as f32 / 120.0))
-            )
+        world_matrix = glm::ext::translate(
+            &world_matrix, glm::vec3(5.0 * glm::sin((self.frame_number / 120) as f32), 0.0, 0.0)
         );
-
-        world_matrix = world_matrix.mul_m(
-            &glm::ext::rotate(
-                &num::one(), glm::radians(180.0),
-                glm::vec3(1.0, 0.0, 0.0)
-            )
-        );
-
-        world_matrix = world_matrix.mul_m(
-            &glm::ext::rotate(
-                &num::one(), glm::radians(360.0) * glm::sin(self.frame_number as f32 / 30.0),
-                glm::vec3(0.0, 1.0, 0.0)
-            )
-        );
-
 
         let push_constants= vk_types::GPUDrawPushConstants{
             world_matrix,
@@ -1137,9 +1139,10 @@ impl VulkanEngine{
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .build();
         let push_constants = [push_constant];
+        let descriptors = [self.gpu_scene_data_descriptor_layout];
         let pipeline_layout_info = pipeline_layout_create_info()
             .push_constant_ranges(&push_constants)
-            .build();
+            .set_layouts(&descriptors);
 
         self.triangle_pipeline_layout = self.get_device().create_pipeline_layout(
             &pipeline_layout_info, None
