@@ -256,7 +256,9 @@ pub struct VulkanEngine{
 
     pub scene_data: GPUSceneData,
 
-    pub gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout
+    pub gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
+
+    pub gpu_scene_data_descriptor_set: vk::DescriptorSet
 }
 
 impl VulkanEngine{
@@ -339,6 +341,7 @@ impl VulkanEngine{
             test_mesh: Default::default(),
             scene_data: GPUSceneData::new(),
             gpu_scene_data_descriptor_layout: Default::default(),
+            gpu_scene_data_descriptor_set: Default::default(),
         }
     }
 
@@ -437,8 +440,25 @@ impl VulkanEngine{
         }
     }
 
+    fn update_scene_data(&mut self){
+        self.scene_data.proj = glm::ext::perspective(
+            45.0, 800.0 / 600.0, 0.1, 1000.0
+        );
+
+        self.scene_data.proj[1][1] *= -1.0;
+
+        self.scene_data.view = num::one();
+    }
+
     unsafe fn draw(&mut self){
         let current_frame = self.get_current_frame().clone();
+
+        self.get_device().wait_for_fences(&[self.frames[current_frame].render_fence],
+                                          true, 1000000000)
+            .expect("Unable to wait for fence");
+
+        self.get_device().reset_fences(&[self.frames[current_frame].render_fence])
+            .expect("Unable to reset fence!");
 
         self.frames[current_frame].frame_descriptors.clear_pools(
             &self.device.clone().unwrap().clone()
@@ -447,14 +467,9 @@ impl VulkanEngine{
         self.frames[current_frame].deletion_queue.flush(self);
         self.frames[current_frame].deletion_queue.clear();
 
-        self.scene_data.proj = glm::ext::perspective(
-            45.0, 800.0 / 600.0, 0.1, 1000.0
-        );
-
-        self.scene_data.view = num::one();
-
-
         let device = self.get_device().clone();
+
+        self.update_scene_data();
 
         let mut gpu_scene_data_buffer = self.create_buffer(
             vk::DeviceSize::from(
@@ -464,13 +479,6 @@ impl VulkanEngine{
 
         self.frames[current_frame].deletion_queue.push_buffer(gpu_scene_data_buffer.clone());
 
-        self.get_device().wait_for_fences(&[self.frames[current_frame].render_fence],
-                                          true, 1000000000)
-            .expect("Unable to wait for fence");
-
-
-        self.get_device().reset_fences(&[self.frames[current_frame].render_fence])
-            .expect("Unable to reset fence!");
 
         let swapchain_image = self.swapchain.as_mut().unwrap()
             .acquire(self.device.as_mut().unwrap(), self.surface_dev.as_ref().unwrap(),
@@ -524,6 +532,12 @@ impl VulkanEngine{
         writer.write_buffer(0, gpu_scene_data_buffer.buffer,
         std::mem::size_of::<GPUSceneData>() as u64, 0u64, vk::DescriptorType::UNIFORM_BUFFER);
         writer.update_set(&device, global_buffer);
+
+
+        let descriptor_sets = [global_buffer];
+        device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
+        self.triangle_pipeline_layout, 0, &descriptor_sets,
+        &[]);
 
 
         self.draw_geometry(cmd);
@@ -644,7 +658,8 @@ impl VulkanEngine{
         let mut world_matrix: glm::Mat4 = num::one();
 
         world_matrix = glm::ext::translate(
-            &world_matrix, glm::vec3(5.0 * glm::sin((self.frame_number / 120) as f32), 0.0, 0.0)
+            &world_matrix, glm::vec3(0.0, 0.0, -10.0 * glm::abs(
+                glm::sin(self.frame_number as f32 / 120.0)))
         );
 
         let push_constants= vk_types::GPUDrawPushConstants{
@@ -1044,6 +1059,11 @@ impl VulkanEngine{
             .first()
             .expect("Unable to get a single descriptor!");
 
+        self.gpu_scene_data_descriptor_set = *self.global_descriptor_allocator
+            .allocate(self.device.as_ref().unwrap(), self.gpu_scene_data_descriptor_layout)
+            .first()
+            .expect("Unable to get a single descriptor!");
+
         let img_info = vk::DescriptorImageInfo::builder()
             .image_layout(vk::ImageLayout::GENERAL)
             .image_view(self.draw_image.image_view)
@@ -1141,9 +1161,8 @@ impl VulkanEngine{
         let push_constants = [push_constant];
         let descriptors = [self.gpu_scene_data_descriptor_layout];
         let pipeline_layout_info = pipeline_layout_create_info()
-            .push_constant_ranges(&push_constants)
-            .set_layouts(&descriptors);
-
+            .set_layouts(&descriptors)
+            .push_constant_ranges(&push_constants);
         self.triangle_pipeline_layout = self.get_device().create_pipeline_layout(
             &pipeline_layout_info, None
         )
