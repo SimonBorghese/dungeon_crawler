@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::cmp::max;
 use std::collections::VecDeque;
 use std::ops::BitOr;
 use sdl2::event::WindowEvent;
@@ -8,6 +9,7 @@ use ash;
 use ash::vk;
 use ash::vk::{BufferUsageFlags, CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
+use glm::{floor, log2};
 use super::vk_loader::*;
 use super::vk_initializers::*;
 use super::vk_image;
@@ -22,7 +24,8 @@ use imgui;
 use imgui_rs_vulkan_renderer;
 use imgui_sdl2;
 use num;
-use crate::engine::vk_types::AllocatedBuffer;
+use sdl2::libc::execl;
+use crate::engine::vk_types::{AllocatedBuffer, AllocatedImage};
 
 const USE_VALIDATION_LAYERS: bool = true;
 
@@ -258,7 +261,21 @@ pub struct VulkanEngine{
 
     pub gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
 
-    pub gpu_scene_data_descriptor_set: vk::DescriptorSet
+    pub gpu_scene_data_descriptor_set: vk::DescriptorSet,
+
+    pub white_image: AllocatedImage,
+
+    pub black_image: AllocatedImage,
+
+    pub grey_image: AllocatedImage,
+
+    pub error_checkerboard_image: AllocatedImage,
+
+    pub default_sampler_linear: vk::Sampler,
+
+    pub default_sampler_nearest: vk::Sampler,
+
+    pub single_image_descriptor_layout: vk::DescriptorSetLayout,
 }
 
 impl VulkanEngine{
@@ -342,6 +359,13 @@ impl VulkanEngine{
             scene_data: GPUSceneData::new(),
             gpu_scene_data_descriptor_layout: Default::default(),
             gpu_scene_data_descriptor_set: Default::default(),
+            white_image: Default::default(),
+            black_image: Default::default(),
+            grey_image: Default::default(),
+            error_checkerboard_image: Default::default(),
+            default_sampler_linear: Default::default(),
+            default_sampler_nearest: Default::default(),
+            single_image_descriptor_layout: Default::default(),
         }
     }
 
@@ -527,14 +551,25 @@ impl VulkanEngine{
             &device, self.gpu_scene_data_descriptor_layout
         );
 
+        let image_set = self.frames[current_frame].frame_descriptors.allocate(
+            &device, self.single_image_descriptor_layout
+        );
+
         let mut writer = DescriptorWriter::new();
         writer.clear();
         writer.write_buffer(0, gpu_scene_data_buffer.buffer,
         std::mem::size_of::<GPUSceneData>() as u64, 0u64, vk::DescriptorType::UNIFORM_BUFFER);
         writer.update_set(&device, global_buffer);
 
+        let mut writer = DescriptorWriter::new();
+        writer.clear();
+        writer.write_image(0, self.error_checkerboard_image.image_view,
+        self.default_sampler_nearest, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
+        writer.update_set(&device, image_set);
 
-        let descriptor_sets = [global_buffer];
+
+        let descriptor_sets = [global_buffer,image_set];
         device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
         self.triangle_pipeline_layout, 0, &descriptor_sets,
         &[]);
@@ -604,6 +639,71 @@ impl VulkanEngine{
             "assets/test.glb"
         ))
             .expect("Unable to load test mesh");
+
+        let white: u32 = 0xFFFFFFFF;
+        self.white_image = self.create_image_from_data(
+            &white as *const u32 as *const _, vk::Extent3D::builder()
+                .width(1)
+                .height(1)
+                .depth(1)
+                .build(), vk::Format::R8G8B8A8_UNORM, vk::ImageUsageFlags::SAMPLED, false
+        );
+
+        let grey: u32 = 0xAAAAAAFF;
+        self.grey_image = self.create_image_from_data(
+            &grey as *const u32 as *const _, vk::Extent3D::builder()
+                .width(1)
+                .height(1)
+                .depth(1)
+                .build(), vk::Format::R8G8B8A8_UNORM, vk::ImageUsageFlags::SAMPLED, false
+        );
+
+        let black: u32 = 0x00000000;
+        self.black_image = self.create_image_from_data(
+            &black as *const u32 as *const _, vk::Extent3D::builder()
+                .width(1)
+                .height(1)
+                .depth(1)
+                .build(), vk::Format::R8G8B8A8_UNORM, vk::ImageUsageFlags::SAMPLED, false
+        );
+
+        let magenta = 0xFFFF00FF;
+        let mut pixels: [u32; 16*16] = [0;16*16];
+        for x in 0..16{
+            for y in 0..16{
+                let value = ((x % 2) ^ (y % 2));
+                if value == 0{
+                    pixels[y*16 + x] = black;
+                } else{
+                    pixels[y*16 + x] = magenta;
+                }
+            }
+        }
+
+        self.error_checkerboard_image = self.create_image_from_data(
+            pixels.as_ptr() as *const _, vk::Extent3D::builder()
+                .width(16)
+                .height(16)
+                .depth(1)
+                .build(), vk::Format::B8G8R8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED, false
+        );
+
+        let sampl = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST);
+
+        self.default_sampler_nearest = self.get_device()
+            .create_sampler(&sampl, None)
+            .expect("Unable to make nearest sampler!");
+
+        let sampl = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR);
+
+        self.default_sampler_linear = self.get_device()
+            .create_sampler(&sampl, None)
+            .expect("Unable to make nearest sampler!");
     }
 
     pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
@@ -1114,6 +1214,11 @@ impl VulkanEngine{
                 self.frames.get(i).clone().unwrap().frame_descriptors.clone()
             )
         }
+
+        let mut builder = DescriptorLayoutBuilder::new();
+        builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
+        self.single_image_descriptor_layout = builder.build(self.get_device(),
+        vk::ShaderStageFlags::FRAGMENT);
     }
 
     unsafe fn init_pipelines(&mut self){
@@ -1159,7 +1264,7 @@ impl VulkanEngine{
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .build();
         let push_constants = [push_constant];
-        let descriptors = [self.gpu_scene_data_descriptor_layout];
+        let descriptors = [self.gpu_scene_data_descriptor_layout, self.single_image_descriptor_layout];
         let pipeline_layout_info = pipeline_layout_create_info()
             .set_layouts(&descriptors)
             .push_constant_ranges(&push_constants);
@@ -1297,6 +1402,103 @@ impl VulkanEngine{
         self.delete_buffer(&mut staging);
 
         new_surface
+    }
+
+    unsafe fn create_image(&self, size: vk::Extent3D, format: vk::Format,
+    usage: vk::ImageUsageFlags, mipmapped: bool) -> AllocatedImage{
+        let mut new_image = AllocatedImage::default();
+        new_image.image_format = format;
+        new_image.image_extent = size;
+
+        let mut img_info = image_create_info(format, usage, size);
+        if mipmapped{
+            img_info.mip_levels =
+                floor(log2(max(size.width, size.height) as f32)) as u32 + 1;
+        }
+
+        let mut alloc_info = vk_mem::AllocationCreateInfo::default();
+        alloc_info.usage = vk_mem::MemoryUsage::AutoPreferDevice;
+        alloc_info.required_flags  = vk::MemoryPropertyFlags::DEVICE_LOCAL;
+
+        let image = self.allocator.as_ref().unwrap()
+            .create_image(&img_info, &alloc_info)
+            .expect("Unable to make image!");
+
+        new_image.image = image.0;
+        new_image.allocation = Some(image.1);
+
+        let mut aspect_flag: vk::ImageAspectFlags;
+        aspect_flag = vk::ImageAspectFlags::COLOR;
+        if format == vk::Format::D32_SFLOAT{
+            aspect_flag = vk::ImageAspectFlags::DEPTH
+        }
+
+        let mut view_info = imageview_create_info(
+            format, new_image.image, aspect_flag
+        );
+        view_info.subresource_range.layer_count = img_info.mip_levels;
+
+        new_image.image_view = self.get_device().create_image_view(
+            &view_info, None
+        ).expect("Unable to create image view!");
+
+        new_image
+    }
+
+    unsafe fn create_image_from_data(&mut self, data: *const u8, size: vk::Extent3D, format: vk::Format,
+    usage: vk::ImageUsageFlags, mipmapped: bool) -> AllocatedImage{
+        let data_size = size.depth * size.width * size.height * 4;
+
+        let mut upload_buffer = self.create_buffer(data_size as u64,
+        vk::BufferUsageFlags::TRANSFER_SRC, vk_mem::MemoryUsage::AutoPreferHost);
+
+        self.allocator.as_ref().unwrap().map_memory(
+            upload_buffer.allocation.as_mut().unwrap()
+        ).expect("Unable to map memory").copy_from(
+            data as _, data_size as usize
+        );
+
+        self.allocator.as_ref().unwrap().unmap_memory(
+            upload_buffer.allocation.as_mut().unwrap()
+        );
+
+        let new_image = self.create_image(size, format, usage.bitor(
+            vk::ImageUsageFlags::TRANSFER_DST
+        ).bitor(vk::ImageUsageFlags::TRANSFER_SRC), mipmapped);
+
+        self.immediate_submit(&|device: &ash::Device, cmd: vk::CommandBuffer|{
+            transition_image(device, cmd, new_image.image, vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+
+            let copy_region = vk::BufferImageCopy::builder()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_extent(size)
+                .image_subresource(vk::ImageSubresourceLayers::builder()
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .build())
+                .build();
+
+            let copy_regions = [copy_region];
+            device.cmd_copy_buffer_to_image(cmd, upload_buffer.buffer, new_image.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL, &copy_regions);
+
+            transition_image(device, cmd, new_image.image, vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        });
+
+        self.delete_buffer(&upload_buffer);
+
+        new_image
+    }
+
+    unsafe fn destroy_image(&self, img: &mut AllocatedImage){
+        self.get_device().destroy_image_view(img.image_view, None);
+        self.allocator.as_ref().unwrap().destroy_image(img.image, img.allocation.as_mut().unwrap());
     }
 
     pub unsafe fn delete_buffer(&self, buffer: &AllocatedBuffer){
