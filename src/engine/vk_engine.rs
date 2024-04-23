@@ -181,6 +181,7 @@ impl GPUSceneData{
     }
 }
 
+
 #[derive(Default)]
 pub struct FrameData {
     command_pool: vk::CommandPool,
@@ -762,27 +763,12 @@ impl VulkanEngine{
                 glm::sin(self.frame_number as f32 / 120.0)))
         );
 
-        let push_constants= vk_types::GPUDrawPushConstants{
-            world_matrix,
-            vertex_buffer: self.test_mesh.mesh_buffers.vertex_buffer_address,
+        let mut mesh = super::e_mesh::Mesh{
+            mesh: self.test_mesh,
+            transform: world_matrix,
+            engine: &ash::Device::from(self.device.clone().as_ref().unwrap()),
+            material: super::e_material::MaterialInstance {},
         };
-
-        self.get_device().cmd_push_constants(cmd, self.triangle_pipeline_layout,
-        vk::ShaderStageFlags::VERTEX, 0, std::slice::from_raw_parts(
-                &push_constants as *const _ as *const u8,
-                std::mem::size_of::<vk_types::GPUDrawPushConstants>()
-            ));
-
-        self.get_device().cmd_bind_index_buffer(
-            cmd, self.test_mesh.mesh_buffers.index_buffer.buffer,
-            vk::DeviceSize::from(0u32), vk::IndexType::UINT32
-        );
-
-
-        for surface in &self.test_mesh.surfaces {
-            self.get_device().cmd_draw_indexed(cmd, surface.count, 1,
-                                               surface.start_index, 0, 0);
-        }
 
         self.get_device().cmd_end_rendering(cmd);
 

@@ -5,3 +5,5 @@ mod vk_image;
 mod vk_descriptor;
 mod vk_pipelines;
 mod vk_loader;
+mod e_mesh;
+mod e_material;

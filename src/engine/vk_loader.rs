@@ -75,19 +75,19 @@ impl MeshAsset{
                 );
             }
 
+            let mut new_surface: GeoSurface = Default::default();
+
+            new_surface.start_index = indices.len() as u32;
+            new_surface.count = 0;
             for p in mesh.faces{
-                let mut new_surface: GeoSurface = Default::default();
                 let index = p.0;
-
-                new_surface.start_index = indices.len() as u32;
-                new_surface.count = index.len() as u32;
-
-                new_mesh.surfaces.push(new_surface);
+                new_surface.count += index.len() as u32;
 
                 for i in index{
                     indices.push(i as i32);
                 }
             }
+            new_mesh.surfaces.push(new_surface);
 
             new_mesh.mesh_buffers = engine.upload_mesh(
                 indices.as_slice(),
@@ -151,19 +151,19 @@ impl MeshAsset{
                 );
             }
 
+            let mut new_surface: GeoSurface = Default::default();
+
+            new_surface.start_index = indices.len() as u32;
+            new_surface.count = 0;
             for p in mesh.faces{
-                let mut new_surface: GeoSurface = Default::default();
                 let index = p.0;
-
-                new_surface.start_index = indices.len() as u32;
-                new_surface.count = index.len() as u32;
-
-                mesh_out.surfaces.push(new_surface);
+                new_surface.count += index.len() as u32;
 
                 for i in index{
                     indices.push(i as i32);
                 }
             }
+            mesh_out.surfaces.push(new_surface);
 
             mesh_out.mesh_buffers = engine.upload_mesh(
                 indices.as_slice(),
