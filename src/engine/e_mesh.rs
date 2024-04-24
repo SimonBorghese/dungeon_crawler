@@ -1,16 +1,29 @@
+use std::ops::Deref;
 use ash::vk;
 use super::{vk_engine, vk_types, vk_loader, e_material};
 use glm;
+use crate::engine::vk_types::VulkanObject;
 
 pub struct Mesh{
     pub mesh: vk_loader::MeshAsset,
     pub transform: glm::Mat4,
     pub engine: ash::Device,
-    pub material: e_material::MaterialInstance
+    pub allocator: Box<vk_mem::Allocator>,
+    pub material: Box<e_material::MaterialInstance>
+}
+
+impl Drop for Mesh{
+    fn drop(&mut self) {
+        unsafe {
+            self.material.free(&self.engine, self.allocator.deref());
+            self.mesh.mesh_buffers.free(&self.engine, self.allocator.deref());
+        }
+    }
 }
 
 impl Mesh{
-    pub unsafe fn draw(&mut self, cmd: vk::CommandBuffer, device: &ash::Device){
+    pub unsafe fn draw(&self, cmd: vk::CommandBuffer){
+        let device = self.engine.clone();
         let push_constants= vk_types::GPUDrawPushConstants{
             world_matrix: self.transform,
             vertex_buffer: self.mesh.mesh_buffers.vertex_buffer_address,

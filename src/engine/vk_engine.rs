@@ -2,7 +2,7 @@
 
 use std::cmp::max;
 use std::collections::VecDeque;
-use std::ops::BitOr;
+use std::ops::{BitOr, Deref};
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
@@ -25,6 +25,7 @@ use imgui_rs_vulkan_renderer;
 use imgui_sdl2;
 use num;
 use sdl2::libc::execl;
+use crate::engine::e_mesh::Mesh;
 use crate::engine::vk_types::{AllocatedBuffer, AllocatedImage};
 
 const USE_VALIDATION_LAYERS: bool = true;
@@ -277,6 +278,12 @@ pub struct VulkanEngine{
     pub default_sampler_nearest: vk::Sampler,
 
     pub single_image_descriptor_layout: vk::DescriptorSetLayout,
+
+    pub basic_mesh: Option<super::e_mesh::Mesh>,
+
+    pub basic_color_material_pipeline: Box<super::e_material::MaterialPipeline>,
+
+    pub basic_color_material: Box<super::e_material::MaterialInstance>
 }
 
 impl VulkanEngine{
@@ -367,10 +374,15 @@ impl VulkanEngine{
             default_sampler_linear: Default::default(),
             default_sampler_nearest: Default::default(),
             single_image_descriptor_layout: Default::default(),
+            basic_mesh: None,
+            basic_color_material_pipeline: Default::default(),
+            basic_color_material: Default::default(),
         }
     }
 
     pub fn init(&mut self){
+
+        self.is_initialized = true;
 
         unsafe {
             self.init_vulkan()
@@ -383,8 +395,6 @@ impl VulkanEngine{
             self.init_imgui();
             self.init_default_data();
         }
-
-        self.is_initialized = true;
     }
 
     pub fn run(&mut self){
@@ -575,6 +585,14 @@ impl VulkanEngine{
         self.triangle_pipeline_layout, 0, &descriptor_sets,
         &[]);
 
+        let mut world_matrix: glm::Mat4 = num::one();
+
+        world_matrix = glm::ext::translate(
+            &world_matrix, glm::vec3(0.0, 0.0, -10.0 * glm::abs(
+                glm::sin(self.frame_number as f32 / 120.0)))
+        );
+
+        self.basic_mesh.as_mut().unwrap().transform = world_matrix;
 
         self.draw_geometry(cmd);
 
@@ -705,6 +723,25 @@ impl VulkanEngine{
         self.default_sampler_linear = self.get_device()
             .create_sampler(&sampl, None)
             .expect("Unable to make nearest sampler!");
+
+        self.basic_color_material_pipeline = Box::new(super::e_material::MaterialPipeline{
+            pipeline: self.triangle_pipeline,
+            layout: self.triangle_pipeline_layout,
+        });
+
+        self.basic_color_material = Box::new(super::e_material::MaterialInstance{
+            pipeline: self.basic_color_material_pipeline.deref().clone(),
+            material_set: self.gpu_scene_data_descriptor_set,
+            pass_type: Default::default(),
+        });
+
+        self.basic_mesh = Some(super::e_mesh::Mesh{
+            mesh: self.test_mesh.clone(),
+            transform: num::one(),
+            engine: self.device.clone().unwrap(),
+            allocator: Box::new(self.allocator.clone().unwrap()),
+            material: self.basic_color_material.clone(),
+        });
     }
 
     pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
@@ -756,19 +793,7 @@ impl VulkanEngine{
 
         self.get_device().cmd_set_scissor(cmd, 0, &scissors);
 
-        let mut world_matrix: glm::Mat4 = num::one();
-
-        world_matrix = glm::ext::translate(
-            &world_matrix, glm::vec3(0.0, 0.0, -10.0 * glm::abs(
-                glm::sin(self.frame_number as f32 / 120.0)))
-        );
-
-        let mut mesh = super::e_mesh::Mesh{
-            mesh: self.test_mesh,
-            transform: world_matrix,
-            engine: &ash::Device::from(self.device.clone().as_ref().unwrap()),
-            material: super::e_material::MaterialInstance {},
-        };
+        self.basic_mesh.as_ref().unwrap().draw(cmd);
 
         self.get_device().cmd_end_rendering(cmd);
 
