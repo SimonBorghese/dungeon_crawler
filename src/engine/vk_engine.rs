@@ -708,6 +708,20 @@ impl VulkanEngine{
             vk::ImageUsageFlags::SAMPLED, false
         );
 
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.allocator.as_ref().unwrap()
+                .destroy_image(device.black_image.image, device.black_image.allocation
+                    .as_ref().unwrap());
+
+            device.allocator.as_ref().unwrap()
+                .destroy_image(device.grey_image.image, device.grey_image.allocation
+                    .as_ref().unwrap());
+
+            device.allocator.as_ref().unwrap()
+                .destroy_image(device.error_checkerboard_image.image, device.error_checkerboard_image.allocation
+                    .as_ref().unwrap());
+        }));
+
         let sampl = vk::SamplerCreateInfo::builder()
             .mag_filter(vk::Filter::NEAREST)
             .min_filter(vk::Filter::NEAREST);
@@ -723,6 +737,16 @@ impl VulkanEngine{
         self.default_sampler_linear = self.get_device()
             .create_sampler(&sampl, None)
             .expect("Unable to make nearest sampler!");
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.get_device().destroy_sampler(
+                device.default_sampler_nearest, None
+            );
+
+            device.get_device().destroy_sampler(
+                device.default_sampler_linear, None
+            );
+        }));
 
         self.basic_color_material_pipeline = Box::new(super::e_material::MaterialPipeline{
             pipeline: self.triangle_pipeline,
@@ -967,6 +991,7 @@ impl VulkanEngine{
         self.swapchain_images = self.swapchain.as_ref().unwrap().images().to_vec();
         self.swapchain_image_views = self.create_image_views(&self.swapchain_images);
 
+
         let draw_image_extent = vk::Extent3D::builder()
             .width(width)
             .height(height)
@@ -1036,11 +1061,14 @@ impl VulkanEngine{
         ).expect("Unable to create depth image view!");
 
         self.main_deletion_queue.push_image_view(self.depth_image.image_view);
-        self.main_deletion_queue.push_image(self.depth_image.image);
-        self.main_deletion_queue.push_alloc(self.depth_image.allocation.unwrap());
         self.main_deletion_queue.push_image_view(self.draw_image.image_view);
-        self.main_deletion_queue.push_image(self.draw_image.image);
-        self.main_deletion_queue.push_alloc(self.draw_image.allocation.unwrap());
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+           device.allocator.as_ref().unwrap()
+               .destroy_image(device.depth_image.image, device.depth_image.allocation.as_ref().unwrap());
+            device.allocator.as_ref().unwrap()
+                .destroy_image(device.draw_image.image, device.draw_image.allocation.as_ref().unwrap());
+        }));
 
 
     }
@@ -1230,6 +1258,20 @@ impl VulkanEngine{
         builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
         self.single_image_descriptor_layout = builder.build(self.get_device(),
         vk::ShaderStageFlags::FRAGMENT);
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.get_device().destroy_descriptor_set_layout(
+                device.single_image_descriptor_layout, None
+            );
+
+            device.get_device().destroy_descriptor_set_layout(
+                device.draw_image_description_layout, None
+            );
+
+            device.get_device().destroy_descriptor_set_layout(
+                device.gpu_scene_data_descriptor_layout, None
+            );
+        }));
     }
 
     unsafe fn init_pipelines(&mut self){
@@ -1301,6 +1343,9 @@ impl VulkanEngine{
 
         self.main_deletion_queue.push_pipeline(self.triangle_pipeline);
         self.main_deletion_queue.push_pipeline_layout(self.triangle_pipeline_layout);
+        self.get_device().destroy_shader_module(triangle_vert_shader, None);
+        self.get_device().destroy_shader_module(triangle_frag_shader, None);
+        self.main_deletion_queue.push_pipeline(self.triangle_pipeline);
 
     }
 
@@ -1513,10 +1558,8 @@ impl VulkanEngine{
     }
 
     pub unsafe fn delete_buffer(&self, buffer: &AllocatedBuffer){
-        self.get_device().destroy_buffer(buffer.buffer, None);
-        self.allocator.as_ref().unwrap().free_memory(
-            buffer.allocation.as_ref().unwrap()
-        );
+        self.allocator.as_ref().unwrap()
+            .destroy_buffer(buffer.buffer, buffer.allocation.as_ref().unwrap());
     }
 
     pub unsafe fn delete_allocation(&self, buffer: vk::Buffer, allocation: &vk_mem::Allocation){
@@ -1532,7 +1575,7 @@ impl VulkanEngine{
             self.main_deletion_queue.prepare_flush(self.get_device().clone());
             self.main_deletion_queue.flush(self);
 
-            MeshAsset::delete_mesh(&mut self.test_mesh.clone(), self);
+            //MeshAsset::delete_mesh(&mut self.test_mesh.clone(), self);
 
             for i in 0..FRAME_OVERLAP{
                 self.get_device().destroy_command_pool(self.frames[i].command_pool, None);
