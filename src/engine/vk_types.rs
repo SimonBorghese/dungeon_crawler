@@ -6,7 +6,7 @@ use glm;
 use vk_mem::Allocator;
 
 pub trait VulkanObject {
-    unsafe fn free(&mut self, device: &ash::Device, allocator: &vk_mem::Allocator);
+    unsafe fn free(&self, device: &ash::Device, allocator: &vk_mem::Allocator);
 }
 
 #[derive(Default)]
@@ -20,10 +20,10 @@ pub struct AllocatedImage{
 }
 
 impl VulkanObject for AllocatedImage{
-    unsafe fn free(&mut self, device: &Device, allocator: &Allocator) {
+    unsafe fn free(&self, device: &Device, allocator: &Allocator) {
         device.destroy_image_view(self.image_view, None);
 
-        allocator.destroy_image(self.image, self.allocation.as_mut().unwrap());
+        allocator.destroy_image(self.image, self.allocation.as_ref().unwrap());
     }
 }
 
@@ -36,8 +36,8 @@ pub struct AllocatedBuffer{
 }
 
 impl VulkanObject for AllocatedBuffer{
-    unsafe fn free(&mut self, device: &Device, allocator: &Allocator) {
-        allocator.destroy_buffer(self.buffer, self.allocation.as_mut().unwrap());
+    unsafe fn free(&self, device: &Device, allocator: &Allocator) {
+        allocator.destroy_buffer(self.buffer, self.allocation.as_ref().unwrap());
     }
 }
 
@@ -69,7 +69,7 @@ pub struct GPUMeshBuffers{
 }
 
 impl VulkanObject for GPUMeshBuffers{
-    unsafe fn free(&mut self, device: &Device, allocator: &Allocator) {
+    unsafe fn free(&self, device: &Device, allocator: &Allocator) {
         self.index_buffer.free(device, allocator);
         self.vertex_buffer.free(device, allocator);
     }

@@ -22,7 +22,7 @@ pub struct MaterialPipeline{
 }
 
 impl VulkanObject for MaterialPipeline{
-    unsafe fn free(&mut self, device: &Device, allocator: &Allocator) {
+    unsafe fn free(&self, device: &Device, allocator: &Allocator) {
         device.destroy_pipeline_layout(self.layout, None);
         device.destroy_pipeline(self.pipeline, None);
     }
@@ -36,7 +36,6 @@ pub struct MaterialInstance{
 }
 
 impl VulkanObject for MaterialInstance{
-    unsafe fn free(&mut self, device: &Device, allocator: &Allocator) {
-        self.pipeline.free(device, allocator);
+    unsafe fn free(&self, device: &Device, allocator: &Allocator) {
     }
 }

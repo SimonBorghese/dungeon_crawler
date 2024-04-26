@@ -24,9 +24,7 @@ use imgui;
 use imgui_rs_vulkan_renderer;
 use imgui_sdl2;
 use num;
-use sdl2::libc::execl;
-use crate::engine::e_mesh::Mesh;
-use crate::engine::vk_types::{AllocatedBuffer, AllocatedImage};
+use crate::engine::vk_types::{AllocatedBuffer, AllocatedImage, VulkanObject};
 
 const USE_VALIDATION_LAYERS: bool = true;
 
@@ -419,6 +417,15 @@ impl VulkanEngine{
                         }
                     }
 
+                    sdl2::event::Event::KeyDown { scancode, .. } => {
+                        match scancode.unwrap(){
+                            sdl2::keyboard::Scancode::Escape => {
+                                quit = true;
+                            }
+                            _ => {}
+                        }
+                    }
+
                     _ => {}
                 }
             }
@@ -710,6 +717,9 @@ impl VulkanEngine{
 
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
             device.allocator.as_ref().unwrap()
+                .destroy_image(device.white_image.image, device.white_image.allocation
+                    .as_ref().unwrap());
+            device.allocator.as_ref().unwrap()
                 .destroy_image(device.black_image.image, device.black_image.allocation
                     .as_ref().unwrap());
 
@@ -763,9 +773,22 @@ impl VulkanEngine{
             mesh: self.test_mesh.clone(),
             transform: num::one(),
             engine: self.device.clone().unwrap(),
-            allocator: Box::new(self.allocator.clone().unwrap()),
             material: self.basic_color_material.clone(),
         });
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            device.basic_color_material.free(
+                device.get_device(), device.allocator.as_ref().unwrap()
+            );
+
+            device.basic_color_material_pipeline.free(
+                device.get_device(), device.allocator.as_ref().unwrap()
+            );
+
+            device.basic_mesh.as_ref().unwrap().free(
+                device.get_device(), device.allocator.as_ref().unwrap()
+            );
+        }));
     }
 
     pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
@@ -983,6 +1006,7 @@ impl VulkanEngine{
                                    self.surface_dev.as_ref().unwrap(),
                                    1000000000, false)
             .expect("Unable to acquire images");
+
         self.swapchain = Some(swapchain_builder2);
         self.swapchain_dev = Some(ash::extensions::khr::Swapchain::new(
             self.instance.as_ref().unwrap(),
@@ -1060,14 +1084,21 @@ impl VulkanEngine{
             &dview_info, None
         ).expect("Unable to create depth image view!");
 
-        self.main_deletion_queue.push_image_view(self.depth_image.image_view);
-        self.main_deletion_queue.push_image_view(self.draw_image.image_view);
 
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
-           device.allocator.as_ref().unwrap()
+
+            device.get_device().destroy_image_view(
+                device.depth_image.image_view, None
+            );
+
+            device.get_device().destroy_image_view(
+                device.draw_image.image_view, None
+            );
+            device.allocator.as_ref().unwrap()
                .destroy_image(device.depth_image.image, device.depth_image.allocation.as_ref().unwrap());
             device.allocator.as_ref().unwrap()
                 .destroy_image(device.draw_image.image, device.draw_image.allocation.as_ref().unwrap());
+
         }));
 
 
@@ -1259,6 +1290,7 @@ impl VulkanEngine{
         self.single_image_descriptor_layout = builder.build(self.get_device(),
         vk::ShaderStageFlags::FRAGMENT);
 
+
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
             device.get_device().destroy_descriptor_set_layout(
                 device.single_image_descriptor_layout, None
@@ -1341,12 +1373,10 @@ impl VulkanEngine{
 
         self.triangle_pipeline = pipeline_builder.build_pipeline(self.get_device());
 
-        self.main_deletion_queue.push_pipeline(self.triangle_pipeline);
-        self.main_deletion_queue.push_pipeline_layout(self.triangle_pipeline_layout);
+        //self.main_deletion_queue.push_pipeline(self.triangle_pipeline);
+        //self.main_deletion_queue.push_pipeline_layout(self.triangle_pipeline_layout);
         self.get_device().destroy_shader_module(triangle_vert_shader, None);
         self.get_device().destroy_shader_module(triangle_frag_shader, None);
-        self.main_deletion_queue.push_pipeline(self.triangle_pipeline);
-
     }
 
     pub unsafe fn create_buffer(&self, alloc_size: vk::DeviceSize, usage:
@@ -1371,6 +1401,7 @@ impl VulkanEngine{
 
         buffer.buffer = alloc.0;
         buffer.allocation = Some(alloc.1);
+        buffer.info = Some(self.allocator.as_ref().unwrap().get_allocation_info(&alloc.1));
 
         buffer
     }
@@ -1584,8 +1615,11 @@ impl VulkanEngine{
                 self.get_device().destroy_semaphore(self.frames[i].render_semaphore, None);
             }
 
-            self.destroy_swapchain();
+            for frame in &self.frames{
+                frame.deletion_queue.flush(self);
+            }
 
+            self.destroy_swapchain();
             self.surface_dev.as_ref().unwrap().destroy_surface(self.surface, None);
             self.get_device().destroy_device(None);
             self.debug_utils.as_ref().unwrap().destroy_debug_utils_messenger(self.debug_messenger, None);
