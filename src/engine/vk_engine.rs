@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::cmp::max;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ops::{BitOr, Deref};
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
@@ -268,11 +268,15 @@ pub struct VulkanEngine{
 
     pub single_image_descriptor_layout: vk::DescriptorSetLayout,
 
-    pub basic_mesh: Option<super::e_mesh::Mesh>,
-
     pub basic_color_material_pipeline: Box<super::e_material::MaterialPipeline>,
 
-    pub basic_color_material: Box<super::e_material::MaterialInstance>
+    pub basic_color_material: Box<super::e_material::MaterialInstance>,
+
+    pub entities: HashMap<u32, Box<super::e_mesh::Mesh>>,
+
+    pub next_uid: u32,
+
+    pub basic_mesh: u32
 }
 
 impl VulkanEngine{
@@ -360,9 +364,11 @@ impl VulkanEngine{
             default_sampler_linear: Default::default(),
             default_sampler_nearest: Default::default(),
             single_image_descriptor_layout: Default::default(),
-            basic_mesh: None,
             basic_color_material_pipeline: Default::default(),
             basic_color_material: Default::default(),
+            entities: Default::default(),
+            next_uid: 0,
+            basic_mesh: 999,
         }
     }
 
@@ -586,7 +592,7 @@ impl VulkanEngine{
                 glm::sin(self.frame_number as f32 / 120.0)))
         );
 
-        self.basic_mesh.as_mut().unwrap().transform = world_matrix;
+        self.set_entity_transform(self.basic_mesh, world_matrix);
 
         self.draw_geometry(cmd);
 
@@ -746,7 +752,7 @@ impl VulkanEngine{
             pass_type: Default::default(),
         });
 
-        self.basic_mesh = Some(super::e_mesh::Mesh{
+        self.basic_mesh = self.add_entity(super::e_mesh::Mesh{
             mesh: self.test_mesh.clone(),
             transform: num::one(),
             engine: self.device.clone().unwrap(),
@@ -762,13 +768,13 @@ impl VulkanEngine{
                 device.get_device(), device.allocator.as_ref().unwrap()
             );
 
-            device.basic_mesh.as_ref().unwrap().free(
-                device.get_device(), device.allocator.as_ref().unwrap()
-            );
+            for entity in &device.entities{
+                device.free_entity(*entity.0);
+            }
         }));
     }
 
-    pub unsafe fn draw_geometry(&self, cmd: vk::CommandBuffer){
+    pub unsafe fn draw_geometry(&mut self, cmd: vk::CommandBuffer){
         let color_attachment = attachment_info(
             self.draw_image.image_view, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
         ).build();
@@ -787,12 +793,6 @@ impl VulkanEngine{
             .color_attachments(&color_attachments)
             .depth_attachment(&depth_attachment)
             .layer_count(1);
-
-        self.get_device().cmd_begin_rendering(cmd, &render_info);
-
-        self.get_device().cmd_bind_pipeline(cmd,
-                                            vk::PipelineBindPoint::GRAPHICS,
-                                            self.triangle_pipeline);
 
         let viewport = vk::Viewport::builder()
             .x(0.0)
@@ -817,7 +817,10 @@ impl VulkanEngine{
 
         self.get_device().cmd_set_scissor(cmd, 0, &scissors);
 
-        self.basic_mesh.as_ref().unwrap().draw(cmd);
+
+        self.get_device().cmd_begin_rendering(cmd, &render_info);
+
+        self.render_entity(self.basic_mesh, cmd);
 
         self.get_device().cmd_end_rendering(cmd);
 
@@ -1535,6 +1538,38 @@ impl VulkanEngine{
         self.delete_buffer(&upload_buffer);
 
         new_image
+    }
+
+    pub fn add_entity(&mut self, mesh: super::e_mesh::Mesh) -> u32{
+        let uid = self.next_uid;
+        self.next_uid += 1;
+
+        self.entities.insert(
+            uid, Box::new(mesh)
+        );
+
+        uid
+    }
+
+    pub fn set_entity_transform(&mut self, mesh: u32, transform: glm::Mat4){
+        let mesh_ent = self.entities.get_mut(&mesh)
+            .expect(format!("Unable to get entity uid: {}!", mesh).as_str());
+
+        mesh_ent.transform = transform;
+    }
+
+    pub fn render_entity(&self, mesh: u32, cmd: vk::CommandBuffer){
+        let mesh_ent = self.entities.get(&mesh)
+            .expect(format!("Unable to get entity uid: {}!", mesh).as_str());
+
+        unsafe{ mesh_ent.draw(cmd); }
+    }
+
+    pub fn free_entity(&self, mesh: u32){
+        let mesh_ent = self.entities.get(&mesh)
+            .expect(format!("Unable to get entity uid: {}!", mesh).as_str());
+
+        unsafe{ mesh_ent.free(self.get_device(), self.allocator.as_ref().unwrap()); }
     }
 
     unsafe fn destroy_image(&self, img: &AllocatedImage){

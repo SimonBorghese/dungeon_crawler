@@ -35,6 +35,13 @@ pub struct MaterialInstance{
     pub pass_type: MaterialPass
 }
 
+impl MaterialInstance{
+    pub unsafe fn bind_material(&self, device: &ash::Device, cmd: vk::CommandBuffer){
+        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS,
+        self.pipeline.pipeline);
+    }
+}
+
 impl VulkanObject for MaterialInstance{
     unsafe fn free(&self, device: &Device, allocator: &Allocator) {
     }

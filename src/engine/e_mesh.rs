@@ -29,6 +29,8 @@ impl Mesh{
             vertex_buffer: self.mesh.mesh_buffers.vertex_buffer_address,
         };
 
+        self.material.bind_material(&device, cmd);
+
         device.cmd_push_constants(cmd, self.material.pipeline.layout,
                                              vk::ShaderStageFlags::VERTEX, 0, std::slice::from_raw_parts(
                 &push_constants as *const _ as *const u8,
