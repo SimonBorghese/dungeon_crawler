@@ -164,6 +164,26 @@ impl DescriptorAllocatorGrowable{
         self.full_pools.clear();
     }
 
+    pub unsafe fn completely_free(&self, device: &ash::Device){
+        for p in &self.ready_pools{
+            device.reset_descriptor_pool(*p, vk::DescriptorPoolResetFlags::empty())
+                .expect("Unable to reset descriptor pools!");
+        }
+
+        for p in &self.full_pools{
+            device.reset_descriptor_pool(*p, vk::DescriptorPoolResetFlags::empty())
+                .expect("Unable to reset descriptor pools!");
+        }
+        for p in &self.ready_pools{
+            device.destroy_descriptor_pool(
+                *p, None
+            );
+        }
+        for p in &self.full_pools{
+            device.destroy_descriptor_pool(*p, None);
+        }
+    }
+
     pub unsafe fn allocate(&mut self, device: &ash::Device, layout: vk::DescriptorSetLayout)
     -> vk::DescriptorSet{
         let mut pool_to_use = self.get_pool(device);

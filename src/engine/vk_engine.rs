@@ -20,9 +20,6 @@ use super::vk_image::*;
 use super::vk_loader::*;
 use vk_mem;
 use vk_mem::Alloc;
-use imgui;
-use imgui_rs_vulkan_renderer;
-use imgui_sdl2;
 use num;
 use crate::engine::vk_types::{AllocatedBuffer, AllocatedImage, VulkanObject};
 
@@ -243,12 +240,6 @@ pub struct VulkanEngine{
 
     pub imm_command_pool: vk::CommandPool,
 
-    pub im_context: Option<imgui::Context>,
-
-    pub im_sdl2: Option<imgui_sdl2::ImguiSdl2>,
-
-    pub im_render: Option<imgui_rs_vulkan_renderer::Renderer>,
-
     pub triangle_pipeline_layout: vk::PipelineLayout,
 
     pub triangle_pipeline: vk::Pipeline,
@@ -355,9 +346,6 @@ impl VulkanEngine{
             imm_fence: Default::default(),
             imm_command_buffer: Default::default(),
             imm_command_pool: Default::default(),
-            im_context: None,
-            im_sdl2: None,
-            im_render: None,
             triangle_pipeline_layout: Default::default(),
             main_deletion_queue: Default::default(),
             triangle_pipeline: Default::default(),
@@ -390,7 +378,6 @@ impl VulkanEngine{
             self.init_sync_structures();
             self.init_descriptors();
             self.init_pipelines();
-            self.init_imgui();
             self.init_default_data();
         }
     }
@@ -716,20 +703,10 @@ impl VulkanEngine{
         );
 
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
-            device.allocator.as_ref().unwrap()
-                .destroy_image(device.white_image.image, device.white_image.allocation
-                    .as_ref().unwrap());
-            device.allocator.as_ref().unwrap()
-                .destroy_image(device.black_image.image, device.black_image.allocation
-                    .as_ref().unwrap());
-
-            device.allocator.as_ref().unwrap()
-                .destroy_image(device.grey_image.image, device.grey_image.allocation
-                    .as_ref().unwrap());
-
-            device.allocator.as_ref().unwrap()
-                .destroy_image(device.error_checkerboard_image.image, device.error_checkerboard_image.allocation
-                    .as_ref().unwrap());
+            device.destroy_image(&device.white_image);
+            device.destroy_image(&device.black_image);
+            device.destroy_image(&device.grey_image);
+            device.destroy_image(&device.error_checkerboard_image);
         }));
 
         let sampl = vk::SamplerCreateInfo::builder()
@@ -931,7 +908,6 @@ impl VulkanEngine{
             .set_required_features_11(vulkan_11_features)
             .for_surface(self.surface)
             .require_extension(ash::extensions::khr::Swapchain::name().as_ptr())
-            .require_extension(ash::extensions::ext::ShaderObject::name().as_ptr())
             .queue_family(QueueFamilyCriteria::graphics_present())
             .build(self.instance.as_ref().unwrap(),
             self.surface_dev.as_ref().unwrap(), &builder.2)
@@ -1252,8 +1228,6 @@ impl VulkanEngine{
         self.get_device().update_descriptor_sets(&descriptor_writes,
         &[]);
 
-        self.main_deletion_queue.push_descriptor(self.global_descriptor_allocator.clone());
-
         for i in 0..FRAME_OVERLAP{
             let frame_sizes: Vec<PoolSizeRatio> = vec![
                 PoolSizeRatio{
@@ -1279,11 +1253,15 @@ impl VulkanEngine{
                 .frame_descriptors = DescriptorAllocatorGrowable::new();
             self.frames.get_mut(i).unwrap()
                 .frame_descriptors.init(self.device.clone().as_ref().unwrap(), 1000, frame_sizes);
-
-            self.main_deletion_queue.descriptor_growable.push_front(
-                self.frames.get(i).clone().unwrap().frame_descriptors.clone()
-            )
         }
+
+        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
+            for frame in &device.frames{
+                frame.frame_descriptors.completely_free(device.get_device());
+            }
+            device.global_descriptor_allocator.clear_descriptors(device.get_device());
+            device.global_descriptor_allocator.destroy_pool(device.get_device());
+        }));
 
         let mut builder = DescriptorLayoutBuilder::new();
         builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
@@ -1308,30 +1286,6 @@ impl VulkanEngine{
 
     unsafe fn init_pipelines(&mut self){
         self.init_triangle_pipeline();
-    }
-
-    unsafe fn init_imgui(&mut self){
-        let mut imgui = imgui::Context::create();
-        let platform = imgui_sdl2::ImguiSdl2::new(&mut imgui, &self.window);
-        let renderer = imgui_rs_vulkan_renderer::
-        Renderer::with_default_allocator(
-            self.instance.as_ref().unwrap(),
-            self.chosen_gpu,
-            self.device.clone().unwrap(),
-            self.graphics_queue,
-            self.imm_command_pool,
-            imgui_rs_vulkan_renderer::DynamicRendering {
-                color_attachment_format: self.swapchain_image_format,
-                depth_attachment_format: None,
-            },
-            &mut imgui,
-            None
-        )
-            .expect("Unable to create ImGUI Renderer!");
-
-        self.im_context = Some(imgui);
-        self.im_sdl2 = Some(platform);
-        self.im_render = Some(renderer);
     }
 
     unsafe fn init_triangle_pipeline(&mut self){
@@ -1583,9 +1537,9 @@ impl VulkanEngine{
         new_image
     }
 
-    unsafe fn destroy_image(&self, img: &mut AllocatedImage){
+    unsafe fn destroy_image(&self, img: &AllocatedImage){
         self.get_device().destroy_image_view(img.image_view, None);
-        self.allocator.as_ref().unwrap().destroy_image(img.image, img.allocation.as_mut().unwrap());
+        self.allocator.as_ref().unwrap().destroy_image(img.image, img.allocation.as_ref().unwrap());
     }
 
     pub unsafe fn delete_buffer(&self, buffer: &AllocatedBuffer){
@@ -1621,6 +1575,9 @@ impl VulkanEngine{
 
             self.destroy_swapchain();
             self.surface_dev.as_ref().unwrap().destroy_surface(self.surface, None);
+
+            self.allocator.as_mut().unwrap().free();
+
             self.get_device().destroy_device(None);
             self.debug_utils.as_ref().unwrap().destroy_debug_utils_messenger(self.debug_messenger, None);
             self.instance.as_ref().unwrap().destroy_instance(None);
