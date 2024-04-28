@@ -242,8 +242,6 @@ pub struct VulkanEngine{
 
     pub main_deletion_queue: DeletionQueue,
 
-    pub test_mesh: MeshAsset,
-
     pub scene_data: GPUSceneData,
 
     pub gpu_scene_data_descriptor_layout: vk::DescriptorSetLayout,
@@ -269,6 +267,8 @@ pub struct VulkanEngine{
     pub entities: HashMap<u32, Box<super::e_mesh::Mesh>>,
 
     pub next_uid: u32,
+
+    pub test_mesh: Option<super::e_mesh::Mesh>,
 
     pub basic_mesh: u32,
 
@@ -385,52 +385,51 @@ impl VulkanEngine{
         }
     }
 
-    pub fn run(&mut self){
+    pub fn run(&mut self) -> bool{
         let mut quit = false;
 
-        while !quit{
-            for event in self.event.poll_iter(){
-                match event{
-                    sdl2::event::Event::Quit {..} => {
-                        quit = true
-                    }
-
-                    sdl2::event::Event::Window {win_event, ..} => {
-                        match win_event{
-                            WindowEvent::Minimized => {
-                                self.stop_rendering = true;
-                            }
-                            WindowEvent::Restored => {
-                                self.stop_rendering = false;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    sdl2::event::Event::KeyDown { scancode, .. } => {
-                        match scancode.unwrap(){
-                            sdl2::keyboard::Scancode::Escape => {
-                                quit = true;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    _ => {}
+        for event in self.event.poll_iter(){
+            match event{
+                sdl2::event::Event::Quit {..} => {
+                    quit = true
                 }
-            }
 
-            if self.stop_rendering{
-                continue;
-            }
+                sdl2::event::Event::Window {win_event, ..} => {
+                    match win_event{
+                        WindowEvent::Minimized => {
+                            self.stop_rendering = true;
+                        }
+                        WindowEvent::Restored => {
+                            self.stop_rendering = false;
+                        }
+                        _ => {}
+                    }
+                }
 
+                sdl2::event::Event::KeyDown { scancode, .. } => {
+                    match scancode.unwrap(){
+                        sdl2::keyboard::Scancode::Escape => {
+                            quit = true;
+                        }
+                        _ => {}
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        if !self.stop_rendering{
             unsafe{
                 self.draw();
             }
         }
+
+        quit
+
     }
 
-    pub fn immediate_submit(&mut self, func: &dyn Fn(
+    pub fn immediate_submit(&self, func: &dyn Fn(
         &ash::Device,
         vk::CommandBuffer
     )){
@@ -584,12 +583,7 @@ impl VulkanEngine{
 
         // Write out checkerboard image to the Image Descriptor
         // FIX ME: Move this to draw_geometry call so per-entity materials can be set
-        let mut writer = DescriptorWriter::new();
-        writer.clear();
-        writer.write_image(0, self.error_checkerboard_image.image_view,
-        self.default_sampler_nearest, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
-        writer.update_set(&device, image_set);
+
 
         // Bind Descriptor sets to the graphics pipeline
         let descriptor_sets = [global_buffer,image_set];
@@ -599,17 +593,9 @@ impl VulkanEngine{
 
         // Create our transform for the current model
         // FIX ME: Move somewhere else
-        let mut world_matrix: glm::Mat4 = num::one();
-
-        world_matrix = glm::ext::translate(
-            &world_matrix, glm::vec3(0.0, 0.0, -10.0 * glm::abs(
-                glm::sin(self.frame_number as f32 / 120.0)))
-        );
-
-        self.set_entity_transform(self.basic_mesh, world_matrix);
 
         // Call to our draw geomtry stage
-        self.draw_geometry(cmd);
+        self.draw_geometry(cmd, image_set);
 
         // Convert the draw image to transfer to the swapchain image
         transition_image(self.get_device(),
@@ -676,12 +662,6 @@ impl VulkanEngine{
     }
 
     unsafe fn init_default_data(&mut self){
-
-        self.test_mesh = MeshAsset::load_first_mesh(self, std::path::PathBuf::from(
-            "assets/test.glb"
-        ))
-            .expect("Unable to load test mesh");
-
         let white: u32 = 0xFFFFFFFF;
         self.white_image = self.create_image_from_data(
             &white as *const u32 as *const _, vk::Extent3D::builder()
@@ -773,14 +753,16 @@ impl VulkanEngine{
             pipeline: self.basic_color_material_pipeline.deref().clone(),
             material_set: self.gpu_scene_data_descriptor_set,
             pass_type: Default::default(),
+            diffuse_image: None,
         });
 
-        self.basic_mesh = self.add_entity(super::e_mesh::Mesh{
-            mesh: self.test_mesh.clone(),
-            transform: num::one(),
-            engine: self.device.clone().unwrap(),
-            material: self.basic_color_material.clone(),
-        });
+        self.test_mesh = Some(super::e_mesh::Mesh::load_entities_from_file(
+            std::path::PathBuf::from(String::from("assets/test.glb")), self
+        )[0].clone());
+
+        self.basic_mesh = self.add_entity(
+            self.test_mesh.clone().unwrap()
+        );
 
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
             device.basic_color_material.free(
@@ -797,7 +779,7 @@ impl VulkanEngine{
         }));
     }
 
-    pub unsafe fn draw_geometry(&mut self, cmd: vk::CommandBuffer){
+    pub unsafe fn draw_geometry(&mut self, cmd: vk::CommandBuffer, image_set: vk::DescriptorSet){
         let color_attachment = attachment_info(
             self.draw_image.image_view, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
         ).build();
@@ -843,7 +825,13 @@ impl VulkanEngine{
 
         self.get_device().cmd_begin_rendering(cmd, &render_info);
 
-        self.render_entity(self.basic_mesh, cmd);
+        for i in &self.entities {
+            self.get_entity(*i.0).bind_material(
+                self.get_device(), cmd, image_set
+            );
+
+            self.render_entity(*i.0, cmd);
+        }
 
         self.get_device().cmd_end_rendering(cmd);
 
@@ -1325,7 +1313,7 @@ impl VulkanEngine{
         pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
         pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE);
         pipeline_builder.set_multisampling_none();
-        pipeline_builder.enable_blending_additive();
+        pipeline_builder.enable_blending_alphablend();
         pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL);
         pipeline_builder.rasterizer.line_width = 1.0;
 
@@ -1452,7 +1440,7 @@ impl VulkanEngine{
         new_surface
     }
 
-    unsafe fn create_image(&self, size: vk::Extent3D, format: vk::Format,
+    pub unsafe fn create_image(&self, size: vk::Extent3D, format: vk::Format,
     usage: vk::ImageUsageFlags, mipmapped: bool) -> AllocatedImage{
         let mut new_image = AllocatedImage::default();
         new_image.image_format = format;
@@ -1472,6 +1460,16 @@ impl VulkanEngine{
             .create_image(&img_info, &alloc_info)
             .expect("Unable to make image!");
 
+        self.debug_utils.as_ref().unwrap().set_debug_utils_object_name(
+            self.device.as_ref().unwrap().handle(),
+            &vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_handle(image.0.as_raw())
+                .object_name(std::ffi::CStr::from_ptr(
+                    String::from("AllocatedImage\0").as_ptr() as _
+                ))
+                .object_type(vk::ObjectType::IMAGE)
+        ).expect("Unable to set allocated image name");
+
         new_image.image = image.0;
         new_image.allocation = Some(image.1);
 
@@ -1490,10 +1488,18 @@ impl VulkanEngine{
             &view_info, None
         ).expect("Unable to create image view!");
 
+        let sampl = vk::SamplerCreateInfo::builder()
+            .mag_filter(vk::Filter::NEAREST)
+            .min_filter(vk::Filter::NEAREST);
+
+        new_image.sampler = self.get_device()
+            .create_sampler(&sampl, None)
+            .expect("Unable to make nearest sampler!");
+
         new_image
     }
 
-    unsafe fn create_image_from_data(&mut self, data: *const u8, size: vk::Extent3D, format: vk::Format,
+    pub unsafe fn create_image_from_data(&mut self, data: *const u8, size: vk::Extent3D, format: vk::Format,
     usage: vk::ImageUsageFlags, mipmapped: bool) -> AllocatedImage{
         let data_size = size.depth * size.width * size.height * 4;
 
@@ -1555,6 +1561,12 @@ impl VulkanEngine{
         uid
     }
 
+    pub fn get_entity(&self, mesh: u32) -> Box<super::e_mesh::Mesh>{
+        self.entities.get(&mesh)
+            .expect(format!("Unable to get entity uid: {}!", mesh).as_str())
+            .clone()
+    }
+
     pub fn set_entity_transform(&mut self, mesh: u32, transform: glm::Mat4){
         let mesh_ent = self.entities.get_mut(&mesh)
             .expect(format!("Unable to get entity uid: {}!", mesh).as_str());
@@ -1577,8 +1589,7 @@ impl VulkanEngine{
     }
 
     unsafe fn destroy_image(&self, img: &AllocatedImage){
-        self.get_device().destroy_image_view(img.image_view, None);
-        self.allocator.as_ref().unwrap().destroy_image(img.image, img.allocation.as_ref().unwrap());
+        img.free(self.get_device(), self.allocator.as_ref().unwrap());
     }
 
     pub unsafe fn delete_buffer(&self, buffer: &AllocatedBuffer){

@@ -9,7 +9,7 @@ edition = "2021"
 glm = { version = "0.2.3" }
 num = "0.4.2"
 sdl2 = {version = "0.36.0", features = ["raw-window-handle"]}
-stb_image = "0.3.0"
+image = "0.25.1"
 ash-bootstrap = {git = "https://github.com/SimonBorghese/vk-firewood-rs", branch = "main", features = ["raw-window-handle"]}
 vk-mem = {git = "https://github.com/SimonBorghese/vk-mem-rs", branch = "master"}
 ash = {version = "0.37.3+1.3.251", features = ["libloading", "loaded", "linked"]}

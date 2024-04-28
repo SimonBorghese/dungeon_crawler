@@ -17,14 +17,20 @@ pub struct MeshAsset{
     pub name: String,
 
     pub surfaces: Vec<GeoSurface>,
-    pub mesh_buffers: vk_types::GPUMeshBuffers
+    pub mesh_buffers: vk_types::GPUMeshBuffers,
+    pub material_index: u32
+}
+
+#[derive(Default, Clone)]
+pub struct MaterialDescriptor{
+    pub base_color: Option<String>
 }
 
 impl MeshAsset{
     pub unsafe fn load_gltf_meshes(
         engine: &mut vk_engine::VulkanEngine,
         path: std::path::PathBuf
-    ) -> Vec<MeshAsset>{
+    ) -> (Vec<MeshAsset>, Vec<MaterialDescriptor>){
         println!("Loading GLTF: {}", path.file_name()
             .expect("Couldn't get file name!").to_str()
             .expect("Unable to convert to string!"));
@@ -94,10 +100,31 @@ impl MeshAsset{
                 vertices.as_slice()
             );
 
+            new_mesh.material_index = mesh.material_index;
+
             meshes.push(new_mesh);
         }
 
-        meshes
+        let mut materials: Vec<MaterialDescriptor> = vec![];
+        for material in scene.materials{
+            let base_color = material.textures.get(
+                &russimp::material::TextureType::Diffuse
+            );
+            let mut base_color_file: Option<String> = None;
+
+            if (base_color.is_some()){
+                let diffuse_descriptor = base_color.unwrap();
+                base_color_file = Some(diffuse_descriptor.borrow().filename.clone());
+            }
+
+            materials.push(
+                MaterialDescriptor{
+                    base_color: base_color_file,
+                }
+            );
+        }
+
+        (meshes, materials)
     }
 
     pub unsafe fn load_first_mesh(
