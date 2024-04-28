@@ -230,10 +230,6 @@ pub struct VulkanEngine{
 
     pub global_descriptor_allocator: DescriptorAllocator,
 
-    pub draw_image_descriptors: vk::DescriptorSet,
-
-    pub draw_image_description_layout: vk::DescriptorSetLayout,
-
     pub imm_fence: vk::Fence,
 
     pub imm_command_buffer: vk::CommandBuffer,
@@ -266,8 +262,6 @@ pub struct VulkanEngine{
 
     pub default_sampler_nearest: vk::Sampler,
 
-    pub single_image_descriptor_layout: vk::DescriptorSetLayout,
-
     pub basic_color_material_pipeline: Box<super::e_material::MaterialPipeline>,
 
     pub basic_color_material: Box<super::e_material::MaterialInstance>,
@@ -276,7 +270,11 @@ pub struct VulkanEngine{
 
     pub next_uid: u32,
 
-    pub basic_mesh: u32
+    pub basic_mesh: u32,
+
+    pub texture_descriptor_set: vk::DescriptorSet,
+
+    pub texture_descriptor_set_layout: vk::DescriptorSetLayout,
 }
 
 impl VulkanEngine{
@@ -345,8 +343,6 @@ impl VulkanEngine{
             depth_image: Default::default(),
             draw_extent: Default::default(),
             global_descriptor_allocator: DescriptorAllocator::new(),
-            draw_image_descriptors: Default::default(),
-            draw_image_description_layout: Default::default(),
             imm_fence: Default::default(),
             imm_command_buffer: Default::default(),
             imm_command_pool: Default::default(),
@@ -363,12 +359,13 @@ impl VulkanEngine{
             error_checkerboard_image: Default::default(),
             default_sampler_linear: Default::default(),
             default_sampler_nearest: Default::default(),
-            single_image_descriptor_layout: Default::default(),
             basic_color_material_pipeline: Default::default(),
             basic_color_material: Default::default(),
             entities: Default::default(),
             next_uid: 0,
             basic_mesh: 999,
+            texture_descriptor_set: Default::default(),
+            texture_descriptor_set_layout: Default::default(),
         }
     }
 
@@ -488,6 +485,7 @@ impl VulkanEngine{
     unsafe fn draw(&mut self){
         let current_frame = self.get_current_frame().clone();
 
+        // Reset and await all existing render fenses
         self.get_device().wait_for_fences(&[self.frames[current_frame].render_fence],
                                           true, 1000000000)
             .expect("Unable to wait for fence");
@@ -495,6 +493,8 @@ impl VulkanEngine{
         self.get_device().reset_fences(&[self.frames[current_frame].render_fence])
             .expect("Unable to reset fence!");
 
+
+        // Clear the individual frame pools and deletion queues
         self.frames[current_frame].frame_descriptors.clear_pools(
             &self.device.clone().unwrap().clone()
         );
@@ -502,10 +502,14 @@ impl VulkanEngine{
         self.frames[current_frame].deletion_queue.flush(self);
         self.frames[current_frame].deletion_queue.clear();
 
+        // Clone device such that we don't need to borrow self
         let device = self.get_device().clone();
 
+        // Calculate view and projection if we haven't already
         self.update_scene_data();
 
+
+        // Create Buffer for the GPU Scene Data
         let mut gpu_scene_data_buffer = self.create_buffer(
             vk::DeviceSize::from(
                 std::mem::size_of::<GPUSceneData>() as u32
@@ -515,30 +519,33 @@ impl VulkanEngine{
         self.frames[current_frame].deletion_queue.push_buffer(gpu_scene_data_buffer.clone());
 
 
+        // Get the next swapchain image
         let swapchain_image = self.swapchain.as_mut().unwrap()
             .acquire(self.device.as_mut().unwrap(), self.surface_dev.as_ref().unwrap(),
                      1000000000, false)
             .expect("Unable to acquire swapchain image");
 
+        // Get the current image's command buffer
         let cmd = self.frames[current_frame].command_buffer.clone();
 
+        // Reset it from all the crap from the previous frame
         self.get_device().reset_command_buffer(cmd, Default::default())
             .expect("Unable to reset command buffer!");
 
+        // Our command buffer may different depend on each frame, so reset
         let cmd_begin_info = command_buffer_begin_info(
             vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT
         );
 
+        // Set out draw extent to the window extent
         self.draw_extent.width = self.draw_image.image_extent.width;
         self.draw_extent.height = self.draw_image.image_extent.height;
 
+        // Start the command buffer
         self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
             .expect("Unable to begin command buffer!");
 
-        transition_image(self.get_device(),
-        cmd, self.draw_image.image,
-        vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
-
+        // Convert our draw and depth images to something we can actually use
         transition_image(self.get_device(),
                          cmd, self.draw_image.image,
                          vk::ImageLayout::GENERAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
@@ -547,6 +554,7 @@ impl VulkanEngine{
                          vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
 
 
+        // Map our GPU Scene buffer and write our data to it
         let mut scene_uniforms = self.allocator.as_ref().unwrap().map_memory(
             gpu_scene_data_buffer.allocation.as_mut().unwrap()
         );
@@ -558,20 +566,24 @@ impl VulkanEngine{
             gpu_scene_data_buffer.allocation.as_mut().unwrap()
         );
 
+        // Allocate our Descriptor Set for each frame
         let global_buffer = self.frames[current_frame].frame_descriptors.allocate(
             &device, self.gpu_scene_data_descriptor_layout
         );
 
         let image_set = self.frames[current_frame].frame_descriptors.allocate(
-            &device, self.single_image_descriptor_layout
+            &device, self.texture_descriptor_set_layout
         );
 
+        // Write our GPU Scene Data to the GPU Scene Data Descriptor
         let mut writer = DescriptorWriter::new();
         writer.clear();
         writer.write_buffer(0, gpu_scene_data_buffer.buffer,
         std::mem::size_of::<GPUSceneData>() as u64, 0u64, vk::DescriptorType::UNIFORM_BUFFER);
         writer.update_set(&device, global_buffer);
 
+        // Write out checkerboard image to the Image Descriptor
+        // FIX ME: Move this to draw_geometry call so per-entity materials can be set
         let mut writer = DescriptorWriter::new();
         writer.clear();
         writer.write_image(0, self.error_checkerboard_image.image_view,
@@ -579,12 +591,14 @@ impl VulkanEngine{
         vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
         writer.update_set(&device, image_set);
 
-
+        // Bind Descriptor sets to the graphics pipeline
         let descriptor_sets = [global_buffer,image_set];
         device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
         self.triangle_pipeline_layout, 0, &descriptor_sets,
         &[]);
 
+        // Create our transform for the current model
+        // FIX ME: Move somewhere else
         let mut world_matrix: glm::Mat4 = num::one();
 
         world_matrix = glm::ext::translate(
@@ -594,8 +608,10 @@ impl VulkanEngine{
 
         self.set_entity_transform(self.basic_mesh, world_matrix);
 
+        // Call to our draw geomtry stage
         self.draw_geometry(cmd);
 
+        // Convert the draw image to transfer to the swapchain image
         transition_image(self.get_device(),
                                    cmd, self.draw_image.image,
                                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
@@ -603,21 +619,28 @@ impl VulkanEngine{
         cmd, self.swapchain_images[swapchain_image.image_index],
         vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
 
+        // Copy our drawn image to the swapchain image
         copy_image_to_image(self.get_device(), cmd,
                             self.draw_image.image,
         self.swapchain_images[swapchain_image.image_index],
             self.draw_extent, self.swapchain_extent);
 
+        // Allow us to preset the swapchain image
         transition_image(self.get_device(),
                                    cmd, self.swapchain_images[swapchain_image.image_index],
                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                    vk::ImageLayout::PRESENT_SRC_KHR);
 
+        // Convert our draw image back into something we can use
+        transition_image(self.get_device(),
+                         cmd, self.draw_image.image,
+                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL);
+
         self.get_device().end_command_buffer(cmd)
             .expect("Unable to end command buffer!");
 
 
-
+        // Submit the current command buffer
         let cmd_info = command_buffer_submit_info(cmd)
             .build();
 
@@ -641,13 +664,13 @@ impl VulkanEngine{
             .expect("Unable to submit queue");
 
 
+        // Present image
         let semaphore = self.frames[current_frame].render_semaphore;
         self.swapchain.as_mut().unwrap().queue_present(self.graphics_queue,
                                                        semaphore, swapchain_image.image_index)
             .expect("Unable to present image!");
 
-        self.get_device().reset_fences(&[swapchain_image.complete])
-            .expect("Unable to reset fence!");
+        // Debug, frame output, FIX ME: Remove this
         self.frame_number += 1;
         println!("Frame Number: {}", self.frame_number);
     }
@@ -1183,7 +1206,11 @@ impl VulkanEngine{
     unsafe fn init_descriptors(&mut self){
         let sizes: Vec<PoolSizeRatio> = vec![
             PoolSizeRatio{
-                desc_type: vk::DescriptorType::STORAGE_IMAGE,
+                desc_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                ratio: 1.0,
+            },
+            PoolSizeRatio{
+                desc_type: vk::DescriptorType::UNIFORM_BUFFER,
                 ratio: 1.0,
             }
         ];
@@ -1191,11 +1218,15 @@ impl VulkanEngine{
         self.global_descriptor_allocator.init_pool(self.device.as_ref().unwrap(),
                                                    10, sizes);
 
+        // Initialize the texture descriptor
         let mut builder = DescriptorLayoutBuilder::new();
-        builder.add_binding(0, vk::DescriptorType::STORAGE_IMAGE);
-        self.draw_image_description_layout = builder.build(self.get_device(),
-                                                           vk::ShaderStageFlags::COMPUTE);
+        // Add the basic color parameter
+        builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
+        // Assign to the layout
+        self.texture_descriptor_set_layout = builder.build(self.get_device(),
+                                                           vk::ShaderStageFlags::FRAGMENT);
 
+        // Initialize the GPU Scene Data buffer
         let mut builder = DescriptorLayoutBuilder::new();
         builder.add_binding(0, vk::DescriptorType::UNIFORM_BUFFER);
         self.gpu_scene_data_descriptor_layout = builder.build(
@@ -1203,33 +1234,17 @@ impl VulkanEngine{
                 vk::ShaderStageFlags::FRAGMENT
         );
 
-        self.draw_image_descriptors = *self.global_descriptor_allocator
-            .allocate(self.device.as_ref().unwrap(), self.draw_image_description_layout)
-            .first()
-            .expect("Unable to get a single descriptor!");
-
+        // Allocate the GPU Scene Data and Texture Set
         self.gpu_scene_data_descriptor_set = *self.global_descriptor_allocator
             .allocate(self.device.as_ref().unwrap(), self.gpu_scene_data_descriptor_layout)
             .first()
-            .expect("Unable to get a single descriptor!");
+            .expect("Unable to get GPU Scene Data set!");
 
-        let img_info = vk::DescriptorImageInfo::builder()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(self.draw_image.image_view)
-            .build();
+        self.texture_descriptor_set = *self.global_descriptor_allocator
+            .allocate(self.device.as_ref().unwrap(), self.texture_descriptor_set_layout)
+            .first()
+            .expect("Unable to get texture descriptor set!");
 
-        let image_infos = [img_info];
-
-        let draw_image_write = vk::WriteDescriptorSet::builder()
-            .dst_binding(0)
-            .dst_set(self.draw_image_descriptors)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .image_info(&image_infos)
-            .build();
-
-        let descriptor_writes = [draw_image_write];
-        self.get_device().update_descriptor_sets(&descriptor_writes,
-        &[]);
 
         for i in 0..FRAME_OVERLAP{
             let frame_sizes: Vec<PoolSizeRatio> = vec![
@@ -1264,27 +1279,16 @@ impl VulkanEngine{
             }
             device.global_descriptor_allocator.clear_descriptors(device.get_device());
             device.global_descriptor_allocator.destroy_pool(device.get_device());
-        }));
-
-        let mut builder = DescriptorLayoutBuilder::new();
-        builder.add_binding(0, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
-        self.single_image_descriptor_layout = builder.build(self.get_device(),
-        vk::ShaderStageFlags::FRAGMENT);
-
-
-        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
-            device.get_device().destroy_descriptor_set_layout(
-                device.single_image_descriptor_layout, None
-            );
-
-            device.get_device().destroy_descriptor_set_layout(
-                device.draw_image_description_layout, None
-            );
 
             device.get_device().destroy_descriptor_set_layout(
                 device.gpu_scene_data_descriptor_layout, None
             );
+
+            device.get_device().destroy_descriptor_set_layout(
+                device.texture_descriptor_set_layout, None
+            );
         }));
+
     }
 
     unsafe fn init_pipelines(&mut self){
@@ -1306,7 +1310,7 @@ impl VulkanEngine{
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .build();
         let push_constants = [push_constant];
-        let descriptors = [self.gpu_scene_data_descriptor_layout, self.single_image_descriptor_layout];
+        let descriptors = [self.gpu_scene_data_descriptor_layout, self.texture_descriptor_set_layout];
         let pipeline_layout_info = pipeline_layout_create_info()
             .set_layouts(&descriptors)
             .push_constant_ranges(&push_constants);
