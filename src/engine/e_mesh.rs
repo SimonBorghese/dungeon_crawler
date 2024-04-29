@@ -7,7 +7,7 @@ use glm::all;
 use vk_mem::Allocator;
 use crate::engine::e_material::{MaterialInstance, MaterialPipeline};
 use crate::engine::vk_engine::VulkanEngine;
-use crate::engine::vk_types::VulkanObject;
+use crate::engine::vk_types::{AllocatedImage, VulkanObject};
 use super::e_loader;
 
 #[derive(Clone)]
@@ -29,7 +29,7 @@ impl VulkanObject for Mesh{
 }
 
 impl Mesh{
-    pub unsafe fn load_entities_from_file(file: std::path::PathBuf, engine: &mut VulkanEngine) -> Vec<Self>{
+    pub fn load_entities_from_file(file: std::path::PathBuf, engine: &mut VulkanEngine) -> Vec<Self>{
         let (meshes, materials) =
             vk_loader::MeshAsset::load_gltf_meshes(engine, file);
 
@@ -48,40 +48,68 @@ impl Mesh{
                     .expect("Unable to load image data!");
 
 
-                let loaded_image = engine.create_image_from_data(
-                    image_data.as_rgba8()
-                        .expect("Unable to convert RGB8")
-                        .as_ptr() as _, vk::Extent3D::builder()
-                        .width(image_data.width())
-                        .height(image_data.height())
-                        .depth(1).build(), vk::Format::R8G8B8A8_UNORM,
-                    vk::ImageUsageFlags::SAMPLED, false
-                );
+                unsafe {
+                    let loaded_image = engine.create_image_from_data(
+                        image_data.as_rgba8()
+                            .expect("Unable to convert RGB8")
+                            .as_ptr() as _, vk::Extent3D::builder()
+                            .width(image_data.width())
+                            .height(image_data.height())
+                            .depth(1).build(), vk::Format::R8G8B8A8_UNORM,
+                        vk::ImageUsageFlags::SAMPLED, false
+                    );
 
-                engine.immediate_submit(&|device: &ash::Device, cmd: vk::CommandBuffer|{
-                   super::vk_image::transition_image(
-                       device, cmd,
-                       loaded_image.image, vk::ImageLayout::UNDEFINED,
-                       vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                   );
-                });
+                    engine.immediate_submit(&|device: &ash::Device, cmd: vk::CommandBuffer| {
+                        super::vk_image::transition_image(
+                            device, cmd,
+                            loaded_image.image, vk::ImageLayout::UNDEFINED,
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                        );
+                    });
 
 
-                material_instances.push(
-                    MaterialInstance{
-                        pipeline: *diffuse_color_material.clone(),
-                        material_set: Default::default(),
-                        pass_type: Default::default(),
-                        diffuse_image: Some(loaded_image),
-                    }
-                );
+                    material_instances.push(
+                        MaterialInstance {
+                            pipeline: *diffuse_color_material.clone(),
+                            material_set: Default::default(),
+                            pass_type: Default::default(),
+                            diffuse_image: Some(loaded_image),
+                        }
+                    );
+                }
             } else{
+                let magenta = 0xFFFF00FF;
+                let black = 0xFF000000;
+                let mut pixels: [u32; 16*16] = [0;16*16];
+                for x in 0..16{
+                    for y in 0..16{
+                        let value = ((x % 2) ^ (y % 2));
+                        if value == 0{
+                            pixels[y*16 + x] = black;
+                        } else{
+                            pixels[y*16 + x] = magenta;
+                        }
+                    }
+                }
+
+                let error_image: AllocatedImage;
+                unsafe {
+                    error_image = engine.create_image_from_data(
+                        pixels.as_ptr() as *const _, vk::Extent3D::builder()
+                            .width(16)
+                            .height(16)
+                            .depth(1)
+                            .build(), vk::Format::B8G8R8A8_UNORM,
+                        vk::ImageUsageFlags::SAMPLED, false
+                    );
+                }
+
                 material_instances.push(
                     MaterialInstance{
                         pipeline: *diffuse_color_material.clone(),
                         material_set: Default::default(),
                         pass_type: Default::default(),
-                        diffuse_image: Some(engine.error_checkerboard_image.clone()),
+                        diffuse_image: Some(error_image),
                     }
                 );
             }
@@ -105,6 +133,10 @@ impl Mesh{
 
     pub unsafe fn bind_material(&self, device: &ash::Device, cmd: vk::CommandBuffer, image_set: vk::DescriptorSet){
         self.material.bind_material(device, cmd, image_set);
+    }
+
+    pub unsafe fn update_material(&self, device: &ash::Device, cmd: vk::CommandBuffer, image_set: vk::DescriptorSet){
+        self.material.update_material(device, cmd, image_set);
     }
     pub unsafe fn draw(&self, cmd: vk::CommandBuffer){
         let device = self.engine.clone();

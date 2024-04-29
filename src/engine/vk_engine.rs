@@ -268,10 +268,6 @@ pub struct VulkanEngine{
 
     pub next_uid: u32,
 
-    pub test_mesh: Option<super::e_mesh::Mesh>,
-
-    pub basic_mesh: u32,
-
     pub texture_descriptor_set: vk::DescriptorSet,
 
     pub texture_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -349,7 +345,6 @@ impl VulkanEngine{
             triangle_pipeline_layout: Default::default(),
             main_deletion_queue: Default::default(),
             triangle_pipeline: Default::default(),
-            test_mesh: Default::default(),
             scene_data: GPUSceneData::new(),
             gpu_scene_data_descriptor_layout: Default::default(),
             gpu_scene_data_descriptor_set: Default::default(),
@@ -363,7 +358,6 @@ impl VulkanEngine{
             basic_color_material: Default::default(),
             entities: Default::default(),
             next_uid: 0,
-            basic_mesh: 999,
             texture_descriptor_set: Default::default(),
             texture_descriptor_set_layout: Default::default(),
         }
@@ -570,10 +564,6 @@ impl VulkanEngine{
             &device, self.gpu_scene_data_descriptor_layout
         );
 
-        let image_set = self.frames[current_frame].frame_descriptors.allocate(
-            &device, self.texture_descriptor_set_layout
-        );
-
         // Write our GPU Scene Data to the GPU Scene Data Descriptor
         let mut writer = DescriptorWriter::new();
         writer.clear();
@@ -586,16 +576,16 @@ impl VulkanEngine{
 
 
         // Bind Descriptor sets to the graphics pipeline
-        let descriptor_sets = [global_buffer,image_set];
+        let descriptor_sets = [global_buffer];
         device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
-        self.triangle_pipeline_layout, 0, &descriptor_sets,
-        &[]);
+                                        self.triangle_pipeline_layout, 0, &descriptor_sets,
+                                        &[]);
 
         // Create our transform for the current model
         // FIX ME: Move somewhere else
 
         // Call to our draw geomtry stage
-        self.draw_geometry(cmd, image_set);
+        self.draw_geometry(cmd);
 
         // Convert the draw image to transfer to the swapchain image
         transition_image(self.get_device(),
@@ -756,13 +746,6 @@ impl VulkanEngine{
             diffuse_image: None,
         });
 
-        self.test_mesh = Some(super::e_mesh::Mesh::load_entities_from_file(
-            std::path::PathBuf::from(String::from("assets/test.glb")), self
-        )[0].clone());
-
-        self.basic_mesh = self.add_entity(
-            self.test_mesh.clone().unwrap()
-        );
 
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
             device.basic_color_material.free(
@@ -779,7 +762,8 @@ impl VulkanEngine{
         }));
     }
 
-    pub unsafe fn draw_geometry(&mut self, cmd: vk::CommandBuffer, image_set: vk::DescriptorSet){
+    pub unsafe fn draw_geometry(&mut self, cmd: vk::CommandBuffer){
+        let current_frame = self.get_current_frame();
         let color_attachment = attachment_info(
             self.draw_image.image_view, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
         ).build();
@@ -823,17 +807,34 @@ impl VulkanEngine{
         self.get_device().cmd_set_scissor(cmd, 0, &scissors);
 
 
-        self.get_device().cmd_begin_rendering(cmd, &render_info);
-
         for i in &self.entities {
+            let image_set = self.frames[current_frame].frame_descriptors.allocate(
+                &self.device.as_ref().unwrap(), self.texture_descriptor_set_layout
+            );
+
+            let descriptor_sets = [image_set];
+            self.device.as_ref().unwrap().cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
+                                                                   self.triangle_pipeline_layout, 1, &descriptor_sets,
+                                                                   &[]);
+
+
+            self.get_entity(*i.0).update_material(
+                self.get_device(), cmd, image_set
+            );
+
             self.get_entity(*i.0).bind_material(
                 self.get_device(), cmd, image_set
             );
 
+
+
+            self.get_device().cmd_begin_rendering(cmd, &render_info);
+
             self.render_entity(*i.0, cmd);
+
+            self.get_device().cmd_end_rendering(cmd);
         }
 
-        self.get_device().cmd_end_rendering(cmd);
 
     }
 

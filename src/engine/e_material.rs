@@ -39,11 +39,8 @@ pub struct MaterialInstance{
 }
 
 impl MaterialInstance{
-    pub unsafe fn bind_material(&self, device: &ash::Device, cmd: vk::CommandBuffer,
+    pub unsafe fn update_material(&self, device: &ash::Device, cmd: vk::CommandBuffer,
     set: vk::DescriptorSet){
-
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS,
-        self.pipeline.pipeline);
 
         let mut writer = DescriptorWriter::new();
         writer.clear();
@@ -52,6 +49,14 @@ impl MaterialInstance{
                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                            vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
         writer.update_set(&device, set);
+    }
+
+    pub unsafe fn bind_material(&self, device: &ash::Device, cmd: vk::CommandBuffer,
+                                  set: vk::DescriptorSet){
+        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS,
+                                 self.pipeline.pipeline);
+
+
     }
 }
 

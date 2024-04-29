@@ -27,7 +27,7 @@ pub struct MaterialDescriptor{
 }
 
 impl MeshAsset{
-    pub unsafe fn load_gltf_meshes(
+    pub fn load_gltf_meshes(
         engine: &mut vk_engine::VulkanEngine,
         path: std::path::PathBuf
     ) -> (Vec<MeshAsset>, Vec<MaterialDescriptor>){
@@ -95,10 +95,12 @@ impl MeshAsset{
             }
             new_mesh.surfaces.push(new_surface);
 
-            new_mesh.mesh_buffers = engine.upload_mesh(
-                indices.as_slice(),
-                vertices.as_slice()
-            );
+            unsafe {
+                new_mesh.mesh_buffers = engine.upload_mesh(
+                    indices.as_slice(),
+                    vertices.as_slice()
+                );
+            }
 
             new_mesh.material_index = mesh.material_index;
 
@@ -127,7 +129,7 @@ impl MeshAsset{
         (meshes, materials)
     }
 
-    pub unsafe fn load_first_mesh(
+    pub fn load_first_mesh(
         engine: &mut vk_engine::VulkanEngine,
         path: std::path::PathBuf
     ) -> Option<MeshAsset>{
@@ -192,10 +194,12 @@ impl MeshAsset{
             }
             mesh_out.surfaces.push(new_surface);
 
-            mesh_out.mesh_buffers = engine.upload_mesh(
-                indices.as_slice(),
-                vertices.as_slice()
-            );
+            unsafe {
+                mesh_out.mesh_buffers = engine.upload_mesh(
+                    indices.as_slice(),
+                    vertices.as_slice()
+                );
+            }
 
         }
 
