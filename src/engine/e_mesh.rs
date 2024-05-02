@@ -23,7 +23,6 @@ impl VulkanObject for Mesh{
     unsafe fn free(&self, device: &Device, allocator: &Allocator) {
         println!("Freeing Mesh!");
         self.mesh.mesh_buffers.free(device, allocator);
-
         self.material.free(device, allocator);
     }
 }
@@ -102,6 +101,14 @@ impl Mesh{
                             .build(), vk::Format::B8G8R8A8_UNORM,
                         vk::ImageUsageFlags::SAMPLED, false
                     );
+
+                    engine.immediate_submit(&|device: &ash::Device, cmd: vk::CommandBuffer| {
+                        super::vk_image::transition_image(
+                            device, cmd,
+                            error_image.image, vk::ImageLayout::UNDEFINED,
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                        );
+                    });
                 }
 
                 material_instances.push(
@@ -126,6 +133,15 @@ impl Mesh{
                     material: Box::new(material_instances[i].clone()),
                 }
             )
+        }
+
+        if material_instances.len() > meshes.len(){
+            for i in meshes.len() .. material_instances.len(){
+                unsafe {
+                    material_instances[i].free(engine.device.as_ref().unwrap(),
+                                               engine.allocator.as_ref().unwrap());
+                }
+            }
         }
 
         entities

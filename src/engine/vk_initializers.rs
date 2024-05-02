@@ -105,7 +105,6 @@ pub fn attachment_info(view: vk::ImageView, clear: Option<vk::ClearValue>, layou
         .image_view(view)
         .image_layout(layout)
         .load_op(vk::AttachmentLoadOp::LOAD)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
         .clear_value({
             if clear.is_some(){
@@ -126,7 +125,6 @@ pub fn depth_attachment_info(view: vk::ImageView, clear: Option<vk::ClearValue>,
         .image_view(view)
         .image_layout(layout)
         .load_op(vk::AttachmentLoadOp::LOAD)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
         .store_op(vk::AttachmentStoreOp::STORE)
         .clear_value(depth_clear)
 }

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use ash::{Device, vk};
 use ash;
+use ash::vk::Handle;
 use vk_mem;
 use glm;
 use vk_mem::Allocator;

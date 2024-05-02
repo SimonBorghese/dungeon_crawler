@@ -27,12 +27,16 @@ fn main(){
             &transform, glm::vec3(0.0, 0.0, -5.0 + -10.0 * glm::abs(glm::sin(engine.frame_number as f32 / 120f32)))
         );
         engine.set_entity_transform(mesh, transform);
+        transform = num::one();
         transform = glm::ext::translate(
-            &num::one(), glm::vec3(-10.0 * glm::abs(glm::sin(engine.frame_number as f32 / 120f32)), 0.0, -5.0)
+            &transform, glm::vec3(-10.0 * glm::abs(glm::sin(engine.frame_number as f32 / 120f32)), 0.0, -10.0)
             );
         engine.set_entity_transform(cube, transform);
     }
     unsafe {
+        engine.prepare_cleanup();
+        engine.free_entity(cube);
+        engine.free_entity(mesh);
         engine.cleanup();
     }
 }

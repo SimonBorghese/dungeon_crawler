@@ -262,8 +262,6 @@ pub struct VulkanEngine{
 
     pub basic_color_material_pipeline: Box<super::e_material::MaterialPipeline>,
 
-    pub basic_color_material: Box<super::e_material::MaterialInstance>,
-
     pub entities: HashMap<u32, Box<super::e_mesh::Mesh>>,
 
     pub next_uid: u32,
@@ -271,6 +269,8 @@ pub struct VulkanEngine{
     pub texture_descriptor_set: vk::DescriptorSet,
 
     pub texture_descriptor_set_layout: vk::DescriptorSetLayout,
+
+    pub entity_descriptor_pairs: HashMap<u32, HashMap<u32, vk::DescriptorSet>>,
 }
 
 impl VulkanEngine{
@@ -355,11 +355,11 @@ impl VulkanEngine{
             default_sampler_linear: Default::default(),
             default_sampler_nearest: Default::default(),
             basic_color_material_pipeline: Default::default(),
-            basic_color_material: Default::default(),
             entities: Default::default(),
             next_uid: 0,
             texture_descriptor_set: Default::default(),
             texture_descriptor_set_layout: Default::default(),
+            entity_descriptor_pairs: Default::default(),
         }
     }
 
@@ -538,14 +538,47 @@ impl VulkanEngine{
         self.get_device().begin_command_buffer(cmd, &cmd_begin_info)
             .expect("Unable to begin command buffer!");
 
+        /*
         // Convert our draw and depth images to something we can actually use
         transition_image(self.get_device(),
                          cmd, self.draw_image.image,
-                         vk::ImageLayout::GENERAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+                         vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
+
+        transition_depth_image(self.get_device(),
+                         cmd, self.depth_image.image,
+                         vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+
+
+        // Clear the color and depth images
+        let image_subresource_color = image_subresource_range(
+            vk::ImageAspectFlags::COLOR
+        ).build();
+
+        let color_resource = [image_subresource_color];
+
+        self.get_device().cmd_clear_color_image(cmd, self.draw_image.image,
+        vk::ImageLayout::GENERAL, &vk::ClearColorValue::default(),
+        &color_resource);
+
+        let image_subresource_color = image_subresource_range(
+            vk::ImageAspectFlags::DEPTH
+        ).build();
+
+        let color_resource = [image_subresource_color];
+
+        self.get_device().cmd_clear_depth_stencil_image(cmd, self.depth_image.image,
+                                                vk::ImageLayout::TRANSFER_DST_OPTIMAL, &vk::ClearDepthStencilValue::default(),
+                                                &color_resource);
+
+         */
+
+        // Convert our draw and depth images to something we can actually use
         transition_image(self.get_device(),
+                         cmd, self.draw_image.image,
+                         vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        transition_depth_image(self.get_device(),
                          cmd, self.depth_image.image,
                          vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
-
 
         // Map our GPU Scene buffer and write our data to it
         let mut scene_uniforms = self.allocator.as_ref().unwrap().map_memory(
@@ -571,9 +604,6 @@ impl VulkanEngine{
         std::mem::size_of::<GPUSceneData>() as u64, 0u64, vk::DescriptorType::UNIFORM_BUFFER);
         writer.update_set(&device, global_buffer);
 
-        // Write out checkerboard image to the Image Descriptor
-        // FIX ME: Move this to draw_geometry call so per-entity materials can be set
-
 
         // Bind Descriptor sets to the graphics pipeline
         let descriptor_sets = [global_buffer];
@@ -581,10 +611,7 @@ impl VulkanEngine{
                                         self.triangle_pipeline_layout, 0, &descriptor_sets,
                                         &[]);
 
-        // Create our transform for the current model
-        // FIX ME: Move somewhere else
-
-        // Call to our draw geomtry stage
+        // Call to our draw geometry stage
         self.draw_geometry(cmd);
 
         // Convert the draw image to transfer to the swapchain image
@@ -611,6 +638,7 @@ impl VulkanEngine{
         transition_image(self.get_device(),
                          cmd, self.draw_image.image,
                          vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL);
+
 
         self.get_device().end_command_buffer(cmd)
             .expect("Unable to end command buffer!");
@@ -648,7 +676,7 @@ impl VulkanEngine{
 
         // Debug, frame output, FIX ME: Remove this
         self.frame_number += 1;
-        println!("Frame Number: {}", self.frame_number);
+        //println!("Frame Number: {}", self.frame_number);
     }
 
     unsafe fn init_default_data(&mut self){
@@ -724,6 +752,11 @@ impl VulkanEngine{
             .create_sampler(&sampl, None)
             .expect("Unable to make nearest sampler!");
 
+        self.basic_color_material_pipeline = Box::new(super::e_material::MaterialPipeline{
+            pipeline: self.triangle_pipeline,
+            layout: self.triangle_pipeline_layout,
+        });
+
         self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
             device.get_device().destroy_sampler(
                 device.default_sampler_nearest, None
@@ -732,33 +765,10 @@ impl VulkanEngine{
             device.get_device().destroy_sampler(
                 device.default_sampler_linear, None
             );
-        }));
-
-        self.basic_color_material_pipeline = Box::new(super::e_material::MaterialPipeline{
-            pipeline: self.triangle_pipeline,
-            layout: self.triangle_pipeline_layout,
-        });
-
-        self.basic_color_material = Box::new(super::e_material::MaterialInstance{
-            pipeline: self.basic_color_material_pipeline.deref().clone(),
-            material_set: self.gpu_scene_data_descriptor_set,
-            pass_type: Default::default(),
-            diffuse_image: None,
-        });
-
-
-        self.main_deletion_queue.push_function(Box::new(|device: &VulkanEngine|{
-            device.basic_color_material.free(
-                device.get_device(), device.allocator.as_ref().unwrap()
-            );
 
             device.basic_color_material_pipeline.free(
                 device.get_device(), device.allocator.as_ref().unwrap()
             );
-
-            for entity in &device.entities{
-                device.free_entity(*entity.0);
-            }
         }));
     }
 
@@ -766,11 +776,13 @@ impl VulkanEngine{
         let current_frame = self.get_current_frame();
         let color_attachment = attachment_info(
             self.draw_image.image_view, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-        ).build();
+        )
+            .load_op(vk::AttachmentLoadOp::CLEAR).build();
 
         let depth_attachment = depth_attachment_info(
             self.depth_image.image_view, None, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-        ).build();
+        )
+            .load_op(vk::AttachmentLoadOp::CLEAR).build();
 
         let color_attachments = [color_attachment];
 
@@ -808,32 +820,50 @@ impl VulkanEngine{
 
 
         for i in &self.entities {
-            let image_set = self.frames[current_frame].frame_descriptors.allocate(
+            self.entity_descriptor_pairs.get_mut(&i.0)
+                .expect("Unable to get entity descriptor pair").insert(current_frame as u32,
+                                                                       self.frames[current_frame].frame_descriptors.allocate(
                 &self.device.as_ref().unwrap(), self.texture_descriptor_set_layout
-            );
+            ));
 
-            let descriptor_sets = [image_set];
+            let image_set = self.entity_descriptor_pairs
+                .get(&i.0)
+                .unwrap()
+                .get(&(current_frame as u32))
+                .unwrap();
+
+            let descriptor_sets = [*image_set];
             self.device.as_ref().unwrap().cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
                                                                    self.triangle_pipeline_layout, 1, &descriptor_sets,
                                                                    &[]);
 
 
             self.get_entity(*i.0).update_material(
-                self.get_device(), cmd, image_set
+                self.get_device(), cmd, *image_set
             );
+
+        }
+
+        self.get_device().cmd_begin_rendering(cmd, &render_info);
+        for i in &self.entities {
+            let image_set = self.entity_descriptor_pairs
+                .get(&i.0)
+                .unwrap()
+                .get(&(current_frame as u32))
+                .unwrap();
 
             self.get_entity(*i.0).bind_material(
-                self.get_device(), cmd, image_set
+                self.get_device(), cmd, *image_set
             );
 
-
-
-            self.get_device().cmd_begin_rendering(cmd, &render_info);
+            let descriptor_sets = [*image_set];
+            self.device.as_ref().unwrap().cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS,
+                                                                   self.triangle_pipeline_layout, 1, &descriptor_sets,
+                                                                   &[]);
 
             self.render_entity(*i.0, cmd);
-
-            self.get_device().cmd_end_rendering(cmd);
         }
+        self.get_device().cmd_end_rendering(cmd);
 
 
     }
@@ -1053,7 +1083,8 @@ impl VulkanEngine{
 
         self.depth_image.image_format = vk::Format::D32_SFLOAT;
 
-        let depth_usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+        let mut depth_usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+        depth_usage |= vk::ImageUsageFlags::TRANSFER_DST;
 
         let dimg_info = image_create_info(
             self.depth_image.image_format, depth_usage, self.draw_image.image_extent
@@ -1559,6 +1590,10 @@ impl VulkanEngine{
             uid, Box::new(mesh)
         );
 
+        self.entity_descriptor_pairs.insert(
+            uid, Default::default()
+        );
+
         uid
     }
 
@@ -1582,11 +1617,13 @@ impl VulkanEngine{
         unsafe{ mesh_ent.draw(cmd); }
     }
 
-    pub fn free_entity(&self, mesh: u32){
+    pub fn free_entity(&mut self, mesh: u32){
         let mesh_ent = self.entities.get(&mesh)
             .expect(format!("Unable to get entity uid: {}!", mesh).as_str());
 
         unsafe{ mesh_ent.free(self.get_device(), self.allocator.as_ref().unwrap()); }
+
+        self.entities.remove(&mesh);
     }
 
     unsafe fn destroy_image(&self, img: &AllocatedImage){
@@ -1601,6 +1638,17 @@ impl VulkanEngine{
     pub unsafe fn delete_allocation(&self, buffer: vk::Buffer, allocation: &vk_mem::Allocation){
         self.get_device().destroy_buffer(buffer, None);
         self.allocator.as_ref().unwrap().free_memory(allocation);
+    }
+
+    pub unsafe fn prepare_cleanup(&mut self){
+        if self.is_initialized{
+            // Wait for fences and semaphores for frames
+            for frame in &self.frames{
+                let fences= [frame.render_fence];
+                self.get_device().wait_for_fences(&fences, true, u64::MAX)
+                    .expect("Unable to wait for fence!");
+            }
+        }
     }
 
     pub unsafe fn cleanup(&mut self){
@@ -1627,10 +1675,12 @@ impl VulkanEngine{
             self.destroy_swapchain();
             self.surface_dev.as_ref().unwrap().destroy_surface(self.surface, None);
 
+            // Free our vk_mem allocator
             self.allocator.as_mut().unwrap().free();
 
             self.get_device().destroy_device(None);
             self.debug_utils.as_ref().unwrap().destroy_debug_utils_messenger(self.debug_messenger, None);
+
             self.instance.as_ref().unwrap().destroy_instance(None);
         }
     }
