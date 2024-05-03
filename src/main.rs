@@ -1,3 +1,6 @@
+use std::ops::{Add, Sub};
+use sdl2::event::Event;
+
 mod engine;
 
 fn main(){
@@ -32,6 +35,18 @@ fn main(){
             &transform, glm::vec3(-10.0 * glm::abs(glm::sin(engine.frame_number as f32 / 120f32)), 0.0, -10.0)
             );
         engine.set_entity_transform(cube, transform);
+
+        let keyboard_state = engine.event.keyboard_state();
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::W){
+            engine.camera_position = engine.camera_position.add(
+                engine.camera_forward
+            );
+        }
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::S){
+            engine.camera_position = engine.camera_position.sub(
+                engine.camera_forward
+            );
+        }
     }
     unsafe {
         engine.prepare_cleanup();

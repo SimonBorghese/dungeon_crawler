@@ -271,6 +271,12 @@ pub struct VulkanEngine{
     pub texture_descriptor_set_layout: vk::DescriptorSetLayout,
 
     pub entity_descriptor_pairs: HashMap<u32, HashMap<u32, vk::DescriptorSet>>,
+
+    pub camera_position: glm::Vec3,
+
+    pub camera_forward: glm::Vec3,
+
+    pub camera_up: glm::Vec3,
 }
 
 impl VulkanEngine{
@@ -360,6 +366,9 @@ impl VulkanEngine{
             texture_descriptor_set: Default::default(),
             texture_descriptor_set_layout: Default::default(),
             entity_descriptor_pairs: Default::default(),
+            camera_position: glm::vec3(0.0, 0.0, 0.0),
+            camera_forward: glm::vec3(0.0, 0.0, -1.0),
+            camera_up: glm::vec3(0.0, 1.0, 0.0),
         }
     }
 
@@ -472,7 +481,13 @@ impl VulkanEngine{
 
         self.scene_data.proj[1][1] *= -1.0;
 
-        self.scene_data.view = num::one();
+        self.scene_data.view = glm::ext::look_at(
+            self.camera_position,
+            self.camera_position + self.camera_forward,
+            self.camera_up
+        );
+
+        //self.scene_data.view[1][1] *= -1.0;
     }
 
     unsafe fn draw(&mut self){
