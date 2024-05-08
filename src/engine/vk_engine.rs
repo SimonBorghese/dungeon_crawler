@@ -2,7 +2,7 @@
 
 use std::cmp::max;
 use std::collections::{HashMap, VecDeque};
-use std::ops::{BitOr, Deref};
+use std::ops::{BitOr, Deref, Sub};
 use sdl2::event::WindowEvent;
 use ash_bootstrap;
 use ash;
@@ -274,9 +274,11 @@ pub struct VulkanEngine{
 
     pub camera_position: glm::Vec3,
 
-    pub camera_forward: glm::Vec3,
+    pub camera_eulars: glm::Vec3,
 
-    pub camera_up: glm::Vec3,
+    pub camera_right: glm::Vec3,
+
+    pub camera_forward: glm::Vec3,
 }
 
 impl VulkanEngine{
@@ -367,8 +369,9 @@ impl VulkanEngine{
             texture_descriptor_set_layout: Default::default(),
             entity_descriptor_pairs: Default::default(),
             camera_position: glm::vec3(0.0, 0.0, 0.0),
-            camera_forward: glm::vec3(0.0, 0.0, -1.0),
-            camera_up: glm::vec3(0.0, 1.0, 0.0),
+            camera_eulars: glm::vec3(0.0, 0.0, 0.0),
+            camera_right: glm::vec3(0.0, 0.0, 0.0),
+            camera_forward: glm::vec3(0.0, 0.0, 0.0),
         }
     }
 
@@ -481,11 +484,35 @@ impl VulkanEngine{
 
         self.scene_data.proj[1][1] *= -1.0;
 
+        self.camera_forward = glm::vec3(0.0, 0.0, 0.0);
+        self.camera_forward.x = glm::cos(glm::radians(self.camera_eulars.y)) *
+            glm::cos(glm::radians(self.camera_eulars.x));
+        self.camera_forward.y = glm::sin(glm::radians(self.camera_eulars.x));
+        self.camera_forward.z = glm::sin(glm::radians(self.camera_eulars.y)) *
+            glm::cos(glm::radians(self.camera_eulars.x));
+
+        let camera_look = glm::normalize(
+            self.camera_position.sub(self.camera_forward)
+        );
+
+        let camera_up = glm::vec3(0.0, 1.0, 0.0);
+
+        self.camera_right = glm::normalize(
+            glm::cross(camera_up, camera_look)
+        );
+
+        let camera_up = glm::cross(
+            self.camera_forward, self.camera_right
+        );
+
         self.scene_data.view = glm::ext::look_at(
             self.camera_position,
             self.camera_position + self.camera_forward,
-            self.camera_up
+            glm::vec3(0.0, 1.0, 0.0)
         );
+
+
+
 
         //self.scene_data.view[1][1] *= -1.0;
     }
@@ -794,9 +821,14 @@ impl VulkanEngine{
         )
             .load_op(vk::AttachmentLoadOp::CLEAR).build();
 
+        let mut depth_clear_value = vk::ClearValue::default();
+        depth_clear_value.depth_stencil = vk::ClearDepthStencilValue::builder()
+            .depth(1.0).build();
+
         let depth_attachment = depth_attachment_info(
             self.depth_image.image_view, None, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
         )
+            .clear_value(depth_clear_value)
             .load_op(vk::AttachmentLoadOp::CLEAR).build();
 
         let color_attachments = [color_attachment];
@@ -1361,7 +1393,7 @@ impl VulkanEngine{
         pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE);
         pipeline_builder.set_multisampling_none();
         pipeline_builder.enable_blending_alphablend();
-        pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL);
+        pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::LESS_OR_EQUAL);
         pipeline_builder.rasterizer.line_width = 1.0;
 
         pipeline_builder.set_color_attachment_format(self.draw_image.image_format);

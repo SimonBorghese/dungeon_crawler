@@ -47,6 +47,38 @@ fn main(){
                 engine.camera_forward
             );
         }
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::D){
+            engine.camera_position = engine.camera_position.add(
+                engine.camera_right
+            );
+        }
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::A){
+            engine.camera_position = engine.camera_position.sub(
+                engine.camera_right
+            );
+        }
+
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::Up){
+            engine.camera_eulars = engine.camera_eulars.add(
+                glm::vec3(1.0, 0.0, 0.0)
+            );
+        }
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::Down){
+            engine.camera_eulars = engine.camera_eulars.sub(
+                glm::vec3(1.0, 0.0, 0.0)
+            );
+        }
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::Left){
+            engine.camera_eulars = engine.camera_eulars.add(
+                glm::vec3(0.0, -1.0, 0.0)
+            );
+        }
+        if keyboard_state.is_scancode_pressed(sdl2::keyboard::Scancode::Right){
+            engine.camera_eulars = engine.camera_eulars.sub(
+                glm::vec3(0.0, -1.0, 0.0)
+            );
+        }
+
     }
     unsafe {
         engine.prepare_cleanup();
