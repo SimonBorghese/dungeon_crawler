@@ -155,6 +155,7 @@ impl DeletionQueue{
 }
 
 #[derive(Clone)]
+#[repr(C)]
 pub struct GPUSceneData{
     pub view: glm::Mat4,
     pub proj: glm::Mat4,
@@ -163,6 +164,13 @@ pub struct GPUSceneData{
     pub sunlight_direction: glm::Vec4,
     pub sunlight_color: glm::Vec4
 }
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct LightSceneData{
+
+}
+
 
 impl GPUSceneData{
     pub fn new() -> Self {
@@ -279,6 +287,8 @@ pub struct VulkanEngine{
     pub camera_right: glm::Vec3,
 
     pub camera_forward: glm::Vec3,
+
+    pub camera_fov: f32,
 }
 
 impl VulkanEngine{
@@ -372,6 +382,7 @@ impl VulkanEngine{
             camera_eulars: glm::vec3(0.0, 0.0, 0.0),
             camera_right: glm::vec3(0.0, 0.0, 0.0),
             camera_forward: glm::vec3(0.0, 0.0, 0.0),
+            camera_fov: 45.0,
         }
     }
 
@@ -479,7 +490,7 @@ impl VulkanEngine{
 
     fn update_scene_data(&mut self){
         self.scene_data.proj = glm::ext::perspective(
-            45.0, 800.0 / 600.0, 0.1, 1000.0
+            self.camera_fov, self.window_extent.width as f32 / self.window_extent.height as f32, 0.1, 1000.0
         );
 
         self.scene_data.proj[1][1] *= -1.0;
@@ -491,18 +502,10 @@ impl VulkanEngine{
         self.camera_forward.z = glm::sin(glm::radians(self.camera_eulars.y)) *
             glm::cos(glm::radians(self.camera_eulars.x));
 
-        let camera_look = glm::normalize(
-            self.camera_position.sub(self.camera_forward)
-        );
-
         let camera_up = glm::vec3(0.0, 1.0, 0.0);
 
         self.camera_right = glm::normalize(
-            glm::cross(camera_up, camera_look)
-        );
-
-        let camera_up = glm::cross(
-            self.camera_forward, self.camera_right
+            glm::cross(self.camera_forward, camera_up )
         );
 
         self.scene_data.view = glm::ext::look_at(
@@ -511,10 +514,6 @@ impl VulkanEngine{
             glm::vec3(0.0, 1.0, 0.0)
         );
 
-
-
-
-        //self.scene_data.view[1][1] *= -1.0;
     }
 
     unsafe fn draw(&mut self){
@@ -1278,7 +1277,7 @@ impl VulkanEngine{
             },
             PoolSizeRatio{
                 desc_type: vk::DescriptorType::UNIFORM_BUFFER,
-                ratio: 1.0,
+                ratio: 2.0,
             }
         ];
 
@@ -1296,6 +1295,7 @@ impl VulkanEngine{
         // Initialize the GPU Scene Data buffer
         let mut builder = DescriptorLayoutBuilder::new();
         builder.add_binding(0, vk::DescriptorType::UNIFORM_BUFFER);
+        builder.add_binding(1, vk::DescriptorType::STORAGE_BUFFER);
         self.gpu_scene_data_descriptor_layout = builder.build(
             self.get_device(), vk::ShaderStageFlags::VERTEX |
                 vk::ShaderStageFlags::FRAGMENT
