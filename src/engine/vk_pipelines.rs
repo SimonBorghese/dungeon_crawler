@@ -173,8 +173,8 @@ impl PipelineBuilder{
         self.color_blend_attachment.src_color_blend_factor = vk::BlendFactor::ONE;
         self.color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::DST_ALPHA;
         self.color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
-        self.color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
-        self.color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        self.color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ZERO;
+        self.color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::DST_ALPHA;
         self.color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
     }
 

@@ -1388,12 +1388,12 @@ impl VulkanEngine{
 
         let mut pipeline_builder = PipelineBuilder::new();
         pipeline_builder.pipeline_layout = self.triangle_pipeline_layout;
+        pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::LESS);
         pipeline_builder.set_shaders(triangle_vert_shader, triangle_frag_shader);
         pipeline_builder.set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-        pipeline_builder.set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE);
+        pipeline_builder.set_cull_mode(vk::CullModeFlags::BACK, vk::FrontFace::COUNTER_CLOCKWISE);
         pipeline_builder.set_multisampling_none();
-        pipeline_builder.enable_blending_alphablend();
-        pipeline_builder.enable_depth_test(vk::TRUE, vk::CompareOp::LESS_OR_EQUAL);
+        pipeline_builder.enable_blending_additive();
         pipeline_builder.rasterizer.line_width = 1.0;
 
         pipeline_builder.set_color_attachment_format(self.draw_image.image_format);
