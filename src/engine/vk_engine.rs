@@ -162,7 +162,8 @@ pub struct GPUSceneData{
     pub view_proj: glm::Mat4,
     pub ambient_color: glm::Vec4,
     pub sunlight_direction: glm::Vec4,
-    pub sunlight_color: glm::Vec4
+    pub sunlight_color: glm::Vec4,
+    pub view_position: glm::Vec4
 }
 
 #[derive(Clone)]
@@ -181,6 +182,7 @@ impl GPUSceneData{
             ambient_color: num::one(),
             sunlight_direction: num::one(),
             sunlight_color: num::one(),
+            view_position: num::one(),
         }
     }
 }
@@ -513,6 +515,10 @@ impl VulkanEngine{
             self.camera_position + self.camera_forward,
             glm::vec3(0.0, 1.0, 0.0)
         );
+
+        self.scene_data.view_position = glm::vec4(self.camera_position.x,
+                                                  self.camera_position.y,
+                                                  self.camera_position.z, 1.0);
 
     }
 

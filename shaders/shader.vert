@@ -4,6 +4,9 @@
 layout (location = 0) out vec3 outColor;
 layout (location = 1) out vec2 outUV;
 layout (location = 2) out vec3 outNormal;
+layout (location = 3) out vec3 outFragPos;
+layout (location = 4) out vec3 outCameraPosition;
+
 
 struct Vertex {
 
@@ -25,6 +28,7 @@ layout (std140, set = 0, binding = 0) uniform render_data{
 	vec4 ambient_color;
 	vec4 sunlight_direction;
 	vec4 sunlight_color;
+	vec4 viewPosition;
 };
 
 //push constants block
@@ -44,5 +48,7 @@ void main()
 	outColor = v.color.xyz;
 	outUV.x = v.uv_x;
 	outUV.y = v.uv_y;
-	outNormal = v.normal;
+	outNormal = mat3(transpose(inverse(PushConstants.render_matrix))) * v.normal;
+	outCameraPosition = vec3(viewPosition);
+	outFragPos = vec3(PushConstants.render_matrix * vec4(v.position, 1.0));
 }
