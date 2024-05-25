@@ -9,7 +9,7 @@ use ash;
 use ash::vk;
 use ash::vk::{BufferUsageFlags, CommandBufferResetFlags, CommandPoolCreateFlags, Handle};
 use ash_bootstrap::QueueFamilyCriteria;
-use glm::{floor, log2};
+use glm;
 use super::vk_loader::*;
 use super::vk_initializers::*;
 use super::vk_image;
@@ -1534,7 +1534,7 @@ impl VulkanEngine{
         let mut img_info = image_create_info(format, usage, size);
         if mipmapped{
             img_info.mip_levels =
-                floor(log2(max(size.width, size.height) as f32)) as u32 + 1;
+                glm::floor(glm::log2(max(size.width, size.height) as f32)) as u32 + 1;
         }
 
         let mut alloc_info = vk_mem::AllocationCreateInfo::default();

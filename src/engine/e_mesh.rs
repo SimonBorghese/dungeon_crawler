@@ -1,9 +1,7 @@
-use std::alloc::alloc;
-use std::ops::{BitOr, Deref};
+
 use ash::{Device, vk};
 use super::{vk_engine, vk_types, vk_loader, e_material};
 use glm;
-use glm::all;
 use vk_mem::Allocator;
 use crate::engine::e_material::{MaterialInstance, MaterialPipeline};
 use crate::engine::vk_engine::VulkanEngine;

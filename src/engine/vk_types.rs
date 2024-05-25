@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 use ash::{Device, vk};
 use ash;
-use ash::vk::Handle;
 use vk_mem;
 use glm;
 use vk_mem::Allocator;
@@ -80,6 +79,6 @@ impl VulkanObject for GPUMeshBuffers{
 }
 
 pub struct GPUDrawPushConstants{
-    pub world_matrix: glm::Matrix4<f32>,
+    pub world_matrix: glm::Mat4,
     pub vertex_buffer: vk::DeviceAddress,
 }
